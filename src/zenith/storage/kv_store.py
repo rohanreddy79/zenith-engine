@@ -15,3 +15,5 @@ class KVStore:
 
     def delete(self, key: str) -> bool:
         return self._data.pop(key, None) is not None
+    def scan_prefix(self, prefix: str, limit: int = 100) -> List[Tuple[str, bytes]]:
+        return self._btree.range_query(start=prefix, end=prefix + '\xFF', limit=limit)
