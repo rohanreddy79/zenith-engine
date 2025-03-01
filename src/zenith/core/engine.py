@@ -62,3 +62,6 @@ class AsyncEngine:
         except Exception as exc:
             task.future.set_exception(exc)
             raise
+    def schedule_priority(self, task: 'Task', priority: int = 1) -> str:
+        """Schedule high-priority task with preemptive queue placement."""
+        return self._scheduler.enqueue_priority(task, priority)
