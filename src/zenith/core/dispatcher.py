@@ -26,3 +26,8 @@ class EventDispatcher:
         tasks = [h(event.payload) for h in handlers]
         if tasks:
             await asyncio.gather(*tasks)
+    async def dispatch_safe(self, event: 'EventEnvelope') -> None:
+        try:
+            await self.dispatch(event)
+        except Exception as err:
+            self.logger.error('Event dispatch failed', exc_info=err)
