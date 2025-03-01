@@ -32,3 +32,6 @@ class LRUCache:
         self._cache[key] = (val, exp)
         if len(self._cache) > self.max_size:
             self._cache.popitem(last=False)
+    async def fetch_coalesced(self, key: str, loader: Callable) -> Any:
+        async with self._flight_group.enter(key):
+            return await loader()
