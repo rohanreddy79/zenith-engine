@@ -1,0 +1,14 @@
+"""Prometheus telemetry and latency buckets."""
+
+from typing import Dict
+
+
+class MetricsRegistry:
+    def __init__(self):
+        self._counters: Dict[str, int] = {}
+
+    def increment(self, metric: str, amount: int = 1) -> None:
+        self._counters[metric] = self._counters.get(metric, 0) + amount
+
+    def get_count(self, metric: str) -> int:
+        return self._counters.get(metric, 0)

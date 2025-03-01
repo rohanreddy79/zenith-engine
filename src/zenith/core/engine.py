@@ -1,0 +1,64 @@
+"""Core execution engine and priority worker pool scheduler."""
+
+import asyncio
+import threading
+from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass, field
+
+
+@dataclass
+class EngineConfig:
+    max_workers: int = 16
+    queue_capacity: int = 10000
+    scale_threshold: int = 500
+    heartbeat_interval: float = 1.0
+
+
+class Task:
+    def __init__(self, task_id: str, fn: Callable, *args, priority: int = 0, **kwargs):
+        self.task_id = task_id
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.priority = priority
+        self.future: asyncio.Future = asyncio.Future()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if not self.future.done():
+            self.future.cancel()
+
+
+class AsyncEngine:
+    def __init__(self, config: Optional[EngineConfig] = None):
+        self.config = config or EngineConfig()
+        self._active_tasks: Dict[str, Task] = {}
+        self._lock = threading.Lock()
+        self._running = False
+
+    async def start(self) -> None:
+        self._running = True
+
+    async def shutdown(self) -> None:
+        self._running = False
+        with self._lock:
+            for task in self._active_tasks.values():
+                task.cancel()
+
+    async def submit(self, fn: Callable, *args, **kwargs) -> Any:
+        task_id = f"task-{len(self._active_tasks) + 1}"
+        task = Task(task_id, fn, *args, **kwargs)
+        with self._lock:
+            self._active_tasks[task_id] = task
+        # Execute task
+        try:
+            if asyncio.iscoroutinefunction(fn):
+                res = await fn(*args, **kwargs)
+            else:
+                res = fn(*args, **kwargs)
+            task.future.set_result(res)
+            return res
+        except Exception as exc:
+            task.future.set_exception(exc)
+            raise

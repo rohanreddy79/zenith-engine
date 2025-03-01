@@ -1,0 +1,28 @@
+"""Event dispatcher and subscriber registry."""
+
+import asyncio
+import logging
+from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass
+
+
+@dataclass
+class EventEnvelope:
+    topic: str
+    payload: Any
+    timestamp: float
+
+
+class EventDispatcher:
+    def __init__(self):
+        self._handlers: Dict[str, List[Callable]] = {}
+        self.logger = logging.getLogger("zenith.dispatcher")
+
+    def subscribe(self, topic: str, handler: Callable) -> None:
+        self._handlers.setdefault(topic, []).append(handler)
+
+    async def dispatch(self, event: EventEnvelope) -> None:
+        handlers = self._handlers.get(event.topic, [])
+        tasks = [h(event.payload) for h in handlers]
+        if tasks:
+            await asyncio.gather(*tasks)
