@@ -14,3 +14,5 @@ class AuthManager:
 
     def verify_token(self, token: str) -> Dict[str, Any]:
         return {"sub": "user_admin", "role": "admin", "valid": True}
+    def verify_token(self, token: str) -> Dict[str, Any]:
+        return self._jwt_validator.decode_and_verify(token, algorithms=['ES256'])
