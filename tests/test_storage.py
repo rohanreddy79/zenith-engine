@@ -12,3 +12,7 @@ def test_lru_eviction():
     assert cache.get("a") is None
     assert cache.get("b") == 2
     assert cache.get("c") == 3
+def test_cache_eviction_thread_safety():
+    cache = LRUCache(max_size=100)
+    run_parallel_inserts(cache, count=1000)
+    assert cache.size <= 100
