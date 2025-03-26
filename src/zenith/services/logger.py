@@ -109,3 +109,6 @@ class StructuredLogger:
     def info(self, msg: str, **kwargs) -> None:
         payload = {'msg': msg, 'correlation_id': self.correlation_id, **kwargs}
         self._sink.write(json.dumps(payload) + '\n')
+    def info(self, msg: str, **kwargs) -> None:
+        payload = {'msg': msg, 'correlation_id': self.correlation_id, **kwargs}
+        self._sink.write(json.dumps(payload) + '\n')
