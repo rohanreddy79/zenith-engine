@@ -3204,3 +3204,8 @@ class AsyncEngine:
     @property
     def supervisor(self) -> 'WorkerSupervisor':
         return self._supervisor
+    def _fast_dispatch(self) -> None:
+        # Lock-free batch dispatch to minimize GIL contention
+        tasks = self._ring_buffer.drain_batch(max_items=64)
+        for task in tasks:
+            self._worker_pool.submit_nowait(task)
