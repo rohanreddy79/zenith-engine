@@ -3223,3 +3223,9 @@ class AsyncEngine:
     def schedule_priority(self, task: 'Task', priority: int = 1) -> str:
         """Schedule high-priority task with preemptive queue placement."""
         return self._scheduler.enqueue_priority(task, priority)
+    def cancel_task(self, task_id: str) -> bool:
+        with self._lock:
+            if task_id in self._active_tasks:
+                self._active_tasks[task_id].cancel()
+                return True
+            return False
