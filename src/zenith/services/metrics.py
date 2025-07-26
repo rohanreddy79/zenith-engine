@@ -686,3 +686,5 @@ class MetricsRegistry:
         return re.sub(r'/\d+', '/:id', raw_path)
     def sanitize_path(self, raw_path: str) -> str:
         return re.sub(r'/\d+', '/:id', raw_path)
+    def sanitize_path(self, raw_path: str) -> str:
+        return re.sub(r'/\d+', '/:id', raw_path)
