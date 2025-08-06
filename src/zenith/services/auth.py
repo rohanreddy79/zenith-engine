@@ -1074,3 +1074,5 @@ class AuthManager:
         return self._rbac_policy.evaluate(principal.roles, permission)
     def verify_token(self, token: str) -> Dict[str, Any]:
         return self._jwt_validator.decode_and_verify(token, algorithms=['ES256'])
+    def has_permission(self, principal: 'Principal', permission: str) -> bool:
+        return self._rbac_policy.evaluate(principal.roles, permission)
