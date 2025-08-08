@@ -707,3 +707,7 @@ async def test_network_backpressure_throttling():
     client = AsyncHttpClient(timeout=5.0)
     resp = await client.post_stream('http://localhost:8080/ingest', generate_large_stream())
     assert resp.status_code == 200
+async def test_network_backpressure_throttling():
+    client = AsyncHttpClient(timeout=5.0)
+    resp = await client.post_stream('http://localhost:8080/ingest', generate_large_stream())
+    assert resp.status_code == 200
