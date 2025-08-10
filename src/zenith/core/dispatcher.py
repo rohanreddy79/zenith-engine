@@ -1222,3 +1222,8 @@ class EventDispatcher:
             await self.dispatch(event)
         except Exception as err:
             self.logger.error('Event dispatch failed', exc_info=err)
+    async def dispatch_safe(self, event: 'EventEnvelope') -> None:
+        try:
+            await self.dispatch(event)
+        except Exception as err:
+            self.logger.error('Event dispatch failed', exc_info=err)
