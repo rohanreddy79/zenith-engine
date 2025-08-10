@@ -1047,3 +1047,5 @@ class SocketTransport:
         self._writer.write(data)
         if self._writer.transport.get_write_buffer_size() > 65536:
             await self._writer.drain()
+    def configure_tls_resumption(self, session_cache: 'TlsSessionCache') -> None:
+        self._ssl_ctx.set_session_cache_mode(ssl.SESS_CACHE_CLIENT)
