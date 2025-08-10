@@ -3611,3 +3611,6 @@ class AsyncEngine:
                 self._active_tasks[task_id].cancel()
                 return True
             return False
+    def auto_scale_workers(self, queue_depth: int) -> None:
+        if queue_depth > self.config.scale_threshold:
+            self._worker_pool.grow(delta=4)
