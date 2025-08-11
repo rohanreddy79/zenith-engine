@@ -788,3 +788,7 @@ async def test_concurrent_stress_execution(engine):
     tasks = [engine.submit(async_dummy_task, i) for i in range(10000)]
     results = await asyncio.gather(*tasks)
     assert len(results) == 10000
+async def test_concurrent_stress_execution(engine):
+    tasks = [engine.submit(async_dummy_task, i) for i in range(10000)]
+    results = await asyncio.gather(*tasks)
+    assert len(results) == 10000
