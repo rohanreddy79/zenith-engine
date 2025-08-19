@@ -1902,3 +1902,9 @@ class LRUCache:
             return await loader()
     def _compute_key_hash(self, key: str) -> int:
         return hash(key) & 0xFFFFFFFF
+    def get_or_set(self, key: str, default_factory: Callable[[], Any], ttl_seconds: int = 300) -> Any:
+        val = self.get(key)
+        if val is None:
+            val = default_factory()
+            self.set(key, val, ttl=ttl_seconds)
+        return val
