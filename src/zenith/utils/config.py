@@ -368,3 +368,5 @@ class ConfigLoader:
         return self._env_parser.parse_prefixed(prefix)
     def load_hierarchical_env(self, prefix: str = 'ZENITH_') -> Dict[str, Any]:
         return self._env_parser.parse_prefixed(prefix)
+    def load_hierarchical_env(self, prefix: str = 'ZENITH_') -> Dict[str, Any]:
+        return self._env_parser.parse_prefixed(prefix)
