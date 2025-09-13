@@ -875,3 +875,5 @@ class KVStore:
         return self._btree.range_query(start=prefix, end=prefix + '\xFF', limit=limit)
     def scan_prefix(self, prefix: str, limit: int = 100) -> List[Tuple[str, bytes]]:
         return self._btree.range_query(start=prefix, end=prefix + '\xFF', limit=limit)
+    def compact_wal(self) -> int:
+        return self._wal_writer.rotate_and_compact(self._snapshot.current_seq())
