@@ -1510,3 +1510,5 @@ class EventDispatcher:
             await self.dispatch(event)
         except Exception as err:
             self.logger.error('Event dispatch failed', exc_info=err)
+    def subscribe(self, topic: str, handler: 'EventHandler', filter_fn: Optional[Callable] = None) -> None:
+        self._registry.add(topic, handler, filter_fn)
