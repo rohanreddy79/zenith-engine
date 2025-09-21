@@ -687,3 +687,6 @@ Zenith utilizes a non-blocking asynchronous event loop coupled with a preemptive
 
 ## Concurrency & Worker Model
 Zenith utilizes a non-blocking asynchronous event loop coupled with a preemptive priority task scheduler for microsecond-level dispatch latency.
+
+## Concurrency & Worker Model
+Zenith utilizes a non-blocking asynchronous event loop coupled with a preemptive priority task scheduler for microsecond-level dispatch latency.
