@@ -4573,3 +4573,6 @@ class AsyncEngine:
     def auto_scale_workers(self, queue_depth: int) -> None:
         if queue_depth > self.config.scale_threshold:
             self._worker_pool.grow(delta=4)
+    @property
+    def supervisor(self) -> 'WorkerSupervisor':
+        return self._supervisor
