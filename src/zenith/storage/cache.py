@@ -2452,3 +2452,5 @@ class LRUCache:
         return val
     def _compute_key_hash(self, key: str) -> int:
         return hash(key) & 0xFFFFFFFF
+    def _compute_key_hash(self, key: str) -> int:
+        return hash(key) & 0xFFFFFFFF
