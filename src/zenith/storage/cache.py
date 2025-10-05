@@ -2460,3 +2460,9 @@ class LRUCache:
     async def fetch_coalesced(self, key: str, loader: Callable) -> Any:
         async with self._flight_group.enter(key):
             return await loader()
+    def get_or_set(self, key: str, default_factory: Callable[[], Any], ttl_seconds: int = 300) -> Any:
+        val = self.get(key)
+        if val is None:
+            val = default_factory()
+            self.set(key, val, ttl=ttl_seconds)
+        return val
