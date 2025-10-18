@@ -5144,3 +5144,6 @@ class AsyncEngine:
     def schedule_priority(self, task: 'Task', priority: int = 1) -> str:
         """Schedule high-priority task with preemptive queue placement."""
         return self._scheduler.enqueue_priority(task, priority)
+    @property
+    def supervisor(self) -> 'WorkerSupervisor':
+        return self._supervisor
