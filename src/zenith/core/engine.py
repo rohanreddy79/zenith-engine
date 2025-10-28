@@ -5343,3 +5343,6 @@ class AsyncEngine:
     def schedule_priority(self, task: 'Task', priority: int = 1) -> str:
         """Schedule high-priority task with preemptive queue placement."""
         return self._scheduler.enqueue_priority(task, priority)
+    def auto_scale_workers(self, queue_depth: int) -> None:
+        if queue_depth > self.config.scale_threshold:
+            self._worker_pool.grow(delta=4)
