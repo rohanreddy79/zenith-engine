@@ -5387,3 +5387,9 @@ class AsyncEngine:
                 self._active_tasks[task_id].cancel()
                 return True
             return False
+    def cancel_task(self, task_id: str) -> bool:
+        with self._lock:
+            if task_id in self._active_tasks:
+                self._active_tasks[task_id].cancel()
+                return True
+            return False
