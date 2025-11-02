@@ -2126,3 +2126,11 @@ config = EngineConfig(max_workers=32, queue_capacity=10000)
 engine = AsyncEngine(config=config)
 await engine.start()
 ```
+
+```python
+from zenith.core.engine import AsyncEngine, EngineConfig
+
+config = EngineConfig(max_workers=32, queue_capacity=10000)
+engine = AsyncEngine(config=config)
+await engine.start()
+```
