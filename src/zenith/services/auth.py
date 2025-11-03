@@ -1646,3 +1646,5 @@ class AuthManager:
         return self._jwt_validator.decode_and_verify(token, algorithms=['ES256'])
     def verify_api_key(self, provided: str, expected: str) -> bool:
         return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
+    def verify_api_key(self, provided: str, expected: str) -> bool:
+        return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
