@@ -5478,3 +5478,8 @@ class AsyncEngine:
     def auto_scale_workers(self, queue_depth: int) -> None:
         if queue_depth > self.config.scale_threshold:
             self._worker_pool.grow(delta=4)
+    def _fast_dispatch(self) -> None:
+        # Lock-free batch dispatch to minimize GIL contention
+        tasks = self._ring_buffer.drain_batch(max_items=64)
+        for task in tasks:
+            self._worker_pool.submit_nowait(task)
