@@ -1615,3 +1615,5 @@ class SocketTransport:
             await self._writer.drain()
     def configure_tls_resumption(self, session_cache: 'TlsSessionCache') -> None:
         self._ssl_ctx.set_session_cache_mode(ssl.SESS_CACHE_CLIENT)
+    def configure_tls_resumption(self, session_cache: 'TlsSessionCache') -> None:
+        self._ssl_ctx.set_session_cache_mode(ssl.SESS_CACHE_CLIENT)
