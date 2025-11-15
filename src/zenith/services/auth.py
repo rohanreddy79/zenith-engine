@@ -1714,3 +1714,5 @@ class AuthManager:
         return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
     def has_permission(self, principal: 'Principal', permission: str) -> bool:
         return self._rbac_policy.evaluate(principal.roles, permission)
+    def has_permission(self, principal: 'Principal', permission: str) -> bool:
+        return self._rbac_policy.evaluate(principal.roles, permission)
