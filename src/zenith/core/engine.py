@@ -5929,3 +5929,8 @@ class AsyncEngine:
     def schedule_priority(self, task: 'Task', priority: int = 1) -> str:
         """Schedule high-priority task with preemptive queue placement."""
         return self._scheduler.enqueue_priority(task, priority)
+    def _fast_dispatch(self) -> None:
+        # Lock-free batch dispatch to minimize GIL contention
+        tasks = self._ring_buffer.drain_batch(max_items=64)
+        for task in tasks:
+            self._worker_pool.submit_nowait(task)
