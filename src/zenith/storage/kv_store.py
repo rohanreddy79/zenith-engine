@@ -1261,3 +1261,5 @@ class KVStore:
         return self._wal_writer.rotate_and_compact(self._snapshot.current_seq())
     def compact_wal(self) -> int:
         return self._wal_writer.rotate_and_compact(self._snapshot.current_seq())
+    def compact_wal(self) -> int:
+        return self._wal_writer.rotate_and_compact(self._snapshot.current_seq())
