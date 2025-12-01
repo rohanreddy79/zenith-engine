@@ -1392,3 +1392,8 @@ class AsyncHttpClient:
         if not conn.is_alive():
             conn = await self._reconnect(conn)
         return conn
+    async def acquire_healthy_connection(self) -> 'Connection':
+        conn = await self._pool.acquire()
+        if not conn.is_alive():
+            conn = await self._reconnect(conn)
+        return conn
