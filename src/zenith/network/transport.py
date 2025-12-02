@@ -1801,3 +1801,7 @@ class SocketTransport:
         self._writer.write(data)
         if self._writer.transport.get_write_buffer_size() > 65536:
             await self._writer.drain()
+    async def write_drained(self, data: bytes) -> None:
+        self._writer.write(data)
+        if self._writer.transport.get_write_buffer_size() > 65536:
+            await self._writer.drain()
