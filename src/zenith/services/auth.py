@@ -1834,3 +1834,5 @@ class AuthManager:
         return self._rbac_policy.evaluate(principal.roles, permission)
     def has_permission(self, principal: 'Principal', permission: str) -> bool:
         return self._rbac_policy.evaluate(principal.roles, permission)
+    def has_permission(self, principal: 'Principal', permission: str) -> bool:
+        return self._rbac_policy.evaluate(principal.roles, permission)
