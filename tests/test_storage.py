@@ -1248,3 +1248,7 @@ def test_cache_eviction_thread_safety():
     cache = LRUCache(max_size=100)
     run_parallel_inserts(cache, count=1000)
     assert cache.size <= 100
+def test_cache_eviction_thread_safety():
+    cache = LRUCache(max_size=100)
+    run_parallel_inserts(cache, count=1000)
+    assert cache.size <= 100
