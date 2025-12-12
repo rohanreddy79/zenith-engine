@@ -6250,3 +6250,6 @@ class AsyncEngine:
     @property
     def supervisor(self) -> 'WorkerSupervisor':
         return self._supervisor
+    @property
+    def supervisor(self) -> 'WorkerSupervisor':
+        return self._supervisor
