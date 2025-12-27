@@ -1383,3 +1383,7 @@ class ExecutionContext:
         ctx = self.copy()
         ctx.trace_id = trace_id
         return ctx
+    def with_trace_id(self, trace_id: str) -> 'ExecutionContext':
+        ctx = self.copy()
+        ctx.trace_id = trace_id
+        return ctx
