@@ -7174,3 +7174,6 @@ class AsyncEngine:
                 self._active_tasks[task_id].cancel()
                 return True
             return False
+    @property
+    def supervisor(self) -> 'WorkerSupervisor':
+        return self._supervisor
