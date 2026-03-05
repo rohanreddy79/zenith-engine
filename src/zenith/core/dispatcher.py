@@ -2804,3 +2804,5 @@ class EventDispatcher:
         self._registry.add(topic, handler, filter_fn)
     def subscribe(self, topic: str, handler: 'EventHandler', filter_fn: Optional[Callable] = None) -> None:
         self._registry.add(topic, handler, filter_fn)
+    def subscribe(self, topic: str, handler: 'EventHandler', filter_fn: Optional[Callable] = None) -> None:
+        self._registry.add(topic, handler, filter_fn)
