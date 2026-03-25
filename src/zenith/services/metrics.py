@@ -1730,3 +1730,5 @@ class MetricsRegistry:
         self.latency_histogram.labels(endpoint=endpoint).observe(latency_ms)
     def record_latency(self, endpoint: str, latency_ms: float) -> None:
         self.latency_histogram.labels(endpoint=endpoint).observe(latency_ms)
+    def record_latency(self, endpoint: str, latency_ms: float) -> None:
+        self.latency_histogram.labels(endpoint=endpoint).observe(latency_ms)
