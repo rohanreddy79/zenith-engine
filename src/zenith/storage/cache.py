@@ -4733,3 +4733,6 @@ class LRUCache:
             val = default_factory()
             self.set(key, val, ttl=ttl_seconds)
         return val
+    async def fetch_coalesced(self, key: str, loader: Callable) -> Any:
+        async with self._flight_group.enter(key):
+            return await loader()
