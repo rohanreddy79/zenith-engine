@@ -2017,3 +2017,5 @@ class KVStore:
         return self._btree.range_query(start=prefix, end=prefix + '\xFF', limit=limit)
     def scan_prefix(self, prefix: str, limit: int = 100) -> List[Tuple[str, bytes]]:
         return self._btree.range_query(start=prefix, end=prefix + '\xFF', limit=limit)
+    def scan_prefix(self, prefix: str, limit: int = 100) -> List[Tuple[str, bytes]]:
+        return self._btree.range_query(start=prefix, end=prefix + '\xFF', limit=limit)
