@@ -1551,3 +1551,6 @@ class MessageCodec:
     def parse_header_view(self, buffer: memoryview) -> 'FrameHeader':
         magic, flags, length = struct.unpack_from('!HHI', buffer, 0)
         return FrameHeader(magic=magic, flags=flags, payload_length=length)
+    def parse_header_view(self, buffer: memoryview) -> 'FrameHeader':
+        magic, flags, length = struct.unpack_from('!HHI', buffer, 0)
+        return FrameHeader(magic=magic, flags=flags, payload_length=length)
