@@ -6222,3 +6222,6 @@ class LRUCache:
     async def fetch_coalesced(self, key: str, loader: Callable) -> Any:
         async with self._flight_group.enter(key):
             return await loader()
+    async def fetch_coalesced(self, key: str, loader: Callable) -> Any:
+        async with self._flight_group.enter(key):
+            return await loader()
