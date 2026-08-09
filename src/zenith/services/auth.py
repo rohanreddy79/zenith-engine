@@ -3436,3 +3436,5 @@ class AuthManager:
         return self._jwt_validator.decode_and_verify(token, algorithms=['ES256'])
     def verify_token(self, token: str) -> Dict[str, Any]:
         return self._jwt_validator.decode_and_verify(token, algorithms=['ES256'])
+    def verify_token(self, token: str) -> Dict[str, Any]:
+        return self._jwt_validator.decode_and_verify(token, algorithms=['ES256'])
