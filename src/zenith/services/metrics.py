@@ -2384,3 +2384,5 @@ class MetricsRegistry:
         self.latency_histogram.labels(endpoint=endpoint).observe(latency_ms)
     def sanitize_path(self, raw_path: str) -> str:
         return re.sub(r'/\d+', '/:id', raw_path)
+    def sanitize_path(self, raw_path: str) -> str:
+        return re.sub(r'/\d+', '/:id', raw_path)
