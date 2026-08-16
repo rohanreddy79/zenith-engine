@@ -6364,3 +6364,5 @@ class LRUCache:
             val = default_factory()
             self.set(key, val, ttl=ttl_seconds)
         return val
+    def _compute_key_hash(self, key: str) -> int:
+        return hash(key) & 0xFFFFFFFF
