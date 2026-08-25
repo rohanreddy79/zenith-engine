@@ -303,3 +303,53 @@ fn codec_serialize_errors_carry_their_context() {
     let err = codec::to_vec(&Unserializable, "warp core").unwrap_err();
     assert!(err.to_string().contains("warp core"), "{err}");
 }
+
+#[test]
+fn promise_double_complete_first_wins_and_clones_share() {
+    let (c, w) = promise::<u32>();
+    let c2 = c.clone();
+    let w2 = w.clone();
+    assert!(c.complete(1));
+    assert!(!c2.complete(2), "second completion must lose");
+    assert_eq!(w.peek(), Some(1));
+    assert_eq!(w2.peek(), Some(1));
+    assert_eq!(w.wait_blocking(), 1);
+}
+
+#[test]
+fn promise_blocking_wait_across_threads() {
+    let (c, w) = promise::<u32>();
+    let t = std::thread::spawn(move || w.wait_blocking());
+    // Let the waiter reach the condvar wait before completing.
+    std::thread::yield_now();
+    assert!(c.complete(9));
+    assert_eq!(t.join().unwrap(), 9);
+}
+
+#[test]
+fn promise_future_pending_then_woken() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+    let (c, w) = promise::<u32>();
+    let mut fut = w.clone();
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
+    c.complete(5);
+    assert!(matches!(
+        Pin::new(&mut fut).poll(&mut cx),
+        Poll::Ready(5)
+    ));
+}
+
+#[test]
+fn snapshot_decode_body_rejects_garbage() {
+    let rec = SnapshotRecord {
+        upto: 1,
+        meta: SnapshotMeta::default(),
+        body: vec![0xFF, 0x00, 0xFF, 0x13, 0x37],
+    };
+    let err = rec.decode_body().unwrap_err();
+    assert!(!err.to_string().is_empty());
+}

@@ -81,7 +81,7 @@ All numbers with environment + commands in `docs/benchmarks.md`. Headlines
 | Observability | **PASS** (compile-verified) — tracing spans throughout; `otel` feature builds clean; runtime OTLP export **UNVERIFIED** (no collector) |
 | Examples | **PASS** — checkout_saga, crash_me, long_running_counter, ai_agent_loop |
 | README + honest comparison | **PASS** — `README.md`, `docs/comparison.md` (includes where sqrl loses) |
-| Coverage ≥85% core+store | **PASS** — `cargo llvm-cov` over the release acceptance suite: 86.14% regions / 85.39% functions / 85.02% lines |
+| Coverage ≥85% core+store | **PASS** — `cargo llvm-cov` over the release acceptance suite: 86.21% regions / 85.67% functions / 85.17% lines |
 | Publish dry-run | **PASS with caveat** — `cargo package --workspace` verifies all 15 tarballs; `sqrl-core` and `sqrl-macros` pass full `cargo publish --dry-run`; dependent crates resolve only after those publish (normal first-release ordering) |
 | MSRV | **PASS** — 1.85 verified locally (`cargo +1.85 check`, default + `work-stealing` + postgres); `otel` needs 1.88 (documented) |
 
@@ -96,7 +96,11 @@ All numbers with environment + commands in `docs/benchmarks.md`. Headlines
    `SQRL_POSTGRES_URL=postgres://postgres:pw@localhost:5432/postgres cargo test -p sqrl-store-postgres`.
 3. **otel runtime export** — run any OTLP collector, call
    `sqrl::otel::init("http://localhost:4317")`, observe spans/metrics.
-4. **macOS CI legs & CI itself** — push and watch `.github/workflows/ci.yml`.
+4. ~~macOS CI legs & CI itself~~ — verified after push: PR #1's first
+   Actions run passed all four matrix legs (ubuntu/macos × stable/1.85),
+   the release acceptance+DST job, and lints (run 32846154001); the
+   coverage job's invocation was corrected to measure the release
+   acceptance suite.
 5. **Publish chain** — `cargo publish -p sqrl-core && -p sqrl-macros && …`
    in dependency order (each subsequent dry-run turns green as its deps
    land on crates.io).

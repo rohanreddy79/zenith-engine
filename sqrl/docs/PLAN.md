@@ -9,20 +9,16 @@
 1. **Comparison benchmarks (DBOS / Temporal / Restate)** — the sandbox has
    no npm registry access or docker. Exact scripts:
    `bench-harness/comparisons/*.sh`; see docs/benchmarks.md §Comparison.
-2. **macOS CI legs** — CI matrix includes macOS, but this environment is
-   Linux-only; the jobs run on GitHub Actions.
-3. **PostgreSQL storage backend** — fully implemented
+2. **PostgreSQL storage backend** — fully implemented
    (`sqrl-store-postgres`, same contract mapping as the SQLite backend) but
    no Postgres server/docker here: its integration tests are gated on
    `SQRL_POSTGRES_URL` and were not executed. Verify:
    `docker run --rm -e POSTGRES_PASSWORD=pw -p 5432:5432 postgres:16` then
    `SQRL_POSTGRES_URL=postgres://postgres:pw@localhost:5432/postgres cargo test -p sqrl-store-postgres`.
-4. **CI itself** — workflow files are written but this repository's Actions
-   runs happen on push; not observable from the sandbox.
-5. **otel runtime export** — the `otel` feature compiles clean (build +
+3. **otel runtime export** — the `otel` feature compiles clean (build +
    clippy) but was never pointed at a live OTLP collector. Verify with any
    collector and `sqrl::otel::init`.
-6. **Full crates.io publish chain** — `cargo package --workspace` verifies
+4. **Full crates.io publish chain** — `cargo package --workspace` verifies
    all 15 tarballs against a local overlay registry, and `sqrl-core` /
    `sqrl-macros` pass a real `cargo publish --dry-run`; crates depending on
    them can only resolve after those are actually published (normal
@@ -30,7 +26,11 @@
 
 (MSRV 1.85 was verified locally with `cargo +1.85 check` for the default
 features, `work-stealing`, and the Postgres backend; the `otel` feature
-needs rustc 1.88 — see README §Toolchain.)
+needs rustc 1.88 — see README §Toolchain. The CI matrix itself — including
+both macOS legs and both MSRV legs — ran green on GitHub Actions for PR #1
+run 32846154001, so "macOS CI" and "CI itself" have graduated off this
+list; its coverage job initially measured only debug-mode crate tests and
+was fixed to run the release acceptance suite.)
 
 ---
 
@@ -191,8 +191,8 @@ Ordering constraint honored: **simulator before executor**.
 - [x] DST ≥10,000 seeds with fault injection; coverage report in docs/dst.md
 - [x] Fuzz targets zero crashes (3 targets, 60s smoke: 6.0M/2.2M/56K execs)
 - [x] Coverage ≥85% on sqrl-core and sqrl-store (cargo llvm-cov over the
-      release acceptance suite): 86.14% regions / 85.39% functions /
-      85.02% lines
+      release acceptance suite): 86.21% regions / 85.67% functions /
+      85.17% lines
 - [x] All CLI commands integration-tested
 - [x] All examples build (workspace members; run in CI)
 - [x] Publish packaging verified for all crates; full dry-run green for the

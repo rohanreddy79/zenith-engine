@@ -90,6 +90,12 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage
+        # The gate measures core+store under the FULL release acceptance
+        # suite (DST, crash sweeps, real-scheduler tests are release-gated
+        # and carry most of engine.rs's coverage); measuring only the two
+        # crates' debug unit tests under-reports by ~9 points.
         run: |
-          cargo llvm-cov -p sqrl-core -p sqrl-store --summary-only \
-            --fail-under-lines 85
+          SQRL_DST_PARANOID=1 cargo llvm-cov --release --workspace \
+            --ignore-filename-regex 'crates/(sqrl|sqrl-sim|sqrl-macros|sqrl-cli|sqrl-store-sqlite|sqrl-store-postgres)/|/tests/|bench|examples' \
+            --summary-only --fail-under-lines 85 \
+            -- --include-ignored --skip dst_long
