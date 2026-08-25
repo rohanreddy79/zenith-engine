@@ -687,9 +687,11 @@ mod tests {
 
     #[test]
     fn unsynced_data_can_vanish() {
-        let mut cfg = FaultConfig::default();
-        cfg.p_keep_unsynced = 0.0; // always drop unsynced
-        cfg.p_keep_unsynced_ns = 0.0;
+        let cfg = FaultConfig {
+            p_keep_unsynced: 0.0, // always drop unsynced
+            p_keep_unsynced_ns: 0.0,
+            ..FaultConfig::default()
+        };
         let disk = SimDisk::with_faults(2, cfg);
         write_all(&disk, "f", b"doomed");
         disk.crash();
@@ -699,10 +701,12 @@ mod tests {
 
     #[test]
     fn unsynced_data_can_be_torn() {
-        let mut cfg = FaultConfig::default();
-        cfg.p_keep_unsynced = 1.0;
-        cfg.p_torn = 1.0;
-        cfg.p_keep_unsynced_ns = 1.0;
+        let cfg = FaultConfig {
+            p_keep_unsynced: 1.0,
+            p_torn: 1.0,
+            p_keep_unsynced_ns: 1.0,
+            ..FaultConfig::default()
+        };
         let disk = SimDisk::with_faults(3, cfg);
         write_all(&disk, "f", &[7u8; 100]);
         disk.crash();
@@ -724,8 +728,10 @@ mod tests {
 
     #[test]
     fn disk_full() {
-        let mut cfg = FaultConfig::default();
-        cfg.capacity = Some(10);
+        let cfg = FaultConfig {
+            capacity: Some(10),
+            ..FaultConfig::default()
+        };
         let disk = SimDisk::with_faults(5, cfg);
         let mut f = disk.open("f", true).unwrap();
         f.write_at(0, &[0u8; 8]).unwrap();
@@ -751,9 +757,11 @@ mod tests {
     #[test]
     fn latency_advances_clock() {
         let clock = SimClock::default();
-        let mut cfg = FaultConfig::default();
-        cfg.write_latency = Duration::from_millis(3);
-        cfg.sync_latency = Duration::from_millis(10);
+        let cfg = FaultConfig {
+            write_latency: Duration::from_millis(3),
+            sync_latency: Duration::from_millis(10),
+            ..FaultConfig::default()
+        };
         let disk = SimDisk::with_faults(7, cfg);
         disk.attach_clock(clock.clone());
         write_all(&disk, "f", b"x"); // create + write = 2 mutating ops => 6ms
