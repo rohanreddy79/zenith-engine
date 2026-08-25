@@ -38,19 +38,31 @@ use syn::parse::Parser;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use serde::{Deserialize, Serialize};
 /// use sqrl::{Ctx, Result};
 ///
-/// #[sqrl::workflow(name = "checkout", version = 1)]
-/// async fn checkout(ctx: &Ctx, order: Order) -> Result<Receipt> {
-///     // ... durable orchestration ...
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
+/// struct Order {
+///     sku: String,
+///     qty: u32,
 /// }
 ///
-/// // Register with the engine builder (`checkout` is now a unit struct
-/// // implementing `WorkflowDefProvider`):
+/// #[sqrl::workflow(name = "checkout", version = 1)]
+/// async fn checkout(ctx: &Ctx, order: Order) -> Result<u32> {
+///     let total: u32 = ctx
+///         .step("price", move || {
+///             let qty = order.qty;
+///             async move { Ok::<u32, String>(qty * 10) }
+///         })
+///         .await?;
+///     Ok(total)
+/// }
+///
+/// // `checkout` is now a unit struct implementing `WorkflowDefProvider`:
 /// //     builder.register(checkout)
-/// // Call directly (tests, composition):
-/// //     checkout::run(&ctx, order).await
+/// fn assert_provider<P: sqrl::WorkflowDefProvider>(_witness: P) {}
+/// assert_provider(checkout);
 /// ```
 #[proc_macro_attribute]
 pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -68,10 +80,12 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// #[sqrl::step]
-/// async fn charge_card(order: Order, key: String) -> Result<Charge, PaymentError> {
+/// async fn charge_card(amount: u64, key: String) -> Result<u64, String> {
 ///     // ... side-effecting work, journaled by the caller via ctx.step(...) ...
+///     let _ = key;
+///     Ok(amount)
 /// }
 /// ```
 #[proc_macro_attribute]

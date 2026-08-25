@@ -17,3 +17,10 @@ proc-macro = true
 proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
+
+[dev-dependencies]
+# Version-less path-only dev-dependency (stripped at publish): lets the
+# doctests exercise the macros through the `sqrl` facade without a
+# publishable cycle.
+sqrl = { path = "../sqrl" }
+serde = { workspace = true }
