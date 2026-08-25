@@ -38,6 +38,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "otel")]
+pub mod otel;
 mod real;
 
 pub use real::{OsEntropy, RealScheduler, SystemClock};
@@ -46,8 +48,8 @@ pub use sqrl_core::sync::{promise, Completer, Waiter};
 pub use sqrl_core::{
     codec, typed_def, Clock, Ctx, EngineConfig, Entropy, Error, FailureKind, FsyncPolicy,
     JournalEvent, JournalRecord, LogicalTime, NonDeterminismError, Registry, Rejected, Result,
-    RetryPolicy, StateKind, StepError, StepOptions, Storage, TerminalResult, WorkflowDef,
-    WorkflowDefProvider, WorkflowHandle, WorkflowId, SQRL_FORMAT_VERSION,
+    RetryPolicy, StateKind, StepError, StepOptions, Storage, StorageShard, TerminalResult,
+    WorkflowDef, WorkflowDefProvider, WorkflowHandle, WorkflowId, SQRL_FORMAT_VERSION,
 };
 pub use sqrl_macros::{step, workflow};
 pub use sqrl_store::{MemoryStorage, StdVfs, WalOptions, WalStorage};
@@ -57,6 +59,34 @@ use sqrl_core::handle::TerminalResult as RawTerminal;
 use std::sync::Arc;
 
 type StartParts = (WorkflowId, Waiter<Result<(), Rejected>>, WorkflowHandle);
+
+/// Pre-deploy validation: replay every stored workflow history against the
+/// given registry's *current* code, without executing steps or mutating
+/// workflow state. Returns one entry per workflow. Run it against a stopped
+/// engine's data directory (or a copy) — opening the store performs normal
+/// torn-tail recovery repair.
+///
+/// A `Err(Error::NonDeterminism(_))` entry means deploying this code would
+/// strand that workflow; gate the change with `ctx.patched` (see
+/// `docs/versioning-and-patching.md`).
+pub fn replay_check(
+    storage: &dyn Storage,
+    registry: &Registry,
+) -> Result<Vec<(WorkflowId, Result<sqrl_core::engine::ValidationOutcome>)>> {
+    let config = EngineConfig::default();
+    let mut out = Vec::new();
+    for shard in 0..storage.num_shards() {
+        let mut shard = storage.open_shard(shard)?;
+        for id in shard.list().map_err(Error::Storage)? {
+            let readout = shard.read(&id).map_err(Error::Storage)?;
+            out.push((
+                id.clone(),
+                sqrl_core::engine::validate_history(registry, &config, readout, &id),
+            ));
+        }
+    }
+    Ok(out)
+}
 
 /// Builder for [`Sqrl`].
 pub struct SqrlBuilder {
