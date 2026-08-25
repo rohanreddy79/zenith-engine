@@ -9,7 +9,11 @@
 //!   virtual time;
 //! * **safety** — a workflow observed completed stays completed with the
 //!   same result across every later crash/recovery; no illegal state
-//!   transitions; outputs equal the workflow-definition ground truth;
+//!   transitions; outputs equal the workflow-definition ground truth.
+//!   Corruption-mode seeds relax exactly one clause: deliberate bit rot may
+//!   legally void durably-acked suffixes (CRC truncation cuts the logical
+//!   WAL stream at the flipped byte), turning the ack back into a lost
+//!   start that the client-retry drain re-runs;
 //! * **liveness** — once faults stop and owed signals are delivered, every
 //!   started workflow reaches a terminal state.
 //!
@@ -19,7 +23,7 @@
 //! a bounded seed set for CI; `dst_long` (`--ignored`) runs 10k+ seeds. See
 //! `docs/dst.md`.
 
-use sqrl::{Ctx, EngineConfig, FsyncPolicy, Registry, Rejected, RetryPolicy};
+use sqrl::{Ctx, EngineConfig, FsyncPolicy, Registry, Rejected, RetryPolicy, WorkflowHandle};
 use sqrl_core::{stable_hash_more, StateKind, WorkflowId};
 use sqrl_sim::{FaultConfig, SimClock, SimDisk, SimRng, SimScheduler};
 use sqrl_store::{WalOptions, WalStorage};
@@ -49,6 +53,7 @@ struct Coverage {
     timers_fired: u64,
     write_errors_injected: u64,
     corruption_truncations: u64,
+    corruption_regressions: u64,
     backpressure: u64,
     joins_completed: u64,
 }
@@ -67,17 +72,19 @@ impl Coverage {
         self.timers_fired += other.timers_fired;
         self.write_errors_injected += other.write_errors_injected;
         self.corruption_truncations += other.corruption_truncations;
+        self.corruption_regressions += other.corruption_regressions;
         self.backpressure += other.backpressure;
         self.joins_completed += other.joins_completed;
     }
 
     fn report(&self, seeds: u64) -> String {
         format!(
-            "DST coverage over {seeds} seeds:\n  crashes={} (mid-replay={})\n  retries={} panics_caught={} timers_fired={}\n  snapshots={} passivations={} reactivations={}\n  signals={} cancels={} joins={}\n  injected_write_errors={} corruption_truncations={} backpressure={}",
+            "DST coverage over {seeds} seeds:\n  crashes={} (mid-replay={})\n  retries={} panics_caught={} timers_fired={}\n  snapshots={} passivations={} reactivations={}\n  signals={} cancels={} joins={}\n  injected_write_errors={} corruption_truncations={} corruption_regressions={} backpressure={}",
             self.crashes, self.crash_mid_replay, self.retries, self.panics_caught,
             self.timers_fired, self.snapshots, self.passivations, self.reactivations,
             self.signals, self.cancels, self.joins_completed,
-            self.write_errors_injected, self.corruption_truncations, self.backpressure,
+            self.write_errors_injected, self.corruption_truncations,
+            self.corruption_regressions, self.backpressure,
         )
     }
 
@@ -177,7 +184,7 @@ fn zoo(attempts: Attempts) -> Arc<Registry> {
                         let a2 = Arc::clone(&a2);
                         let id = id.clone();
                         async move {
-                            let mut m = a2.lock().unwrap();
+                            let mut m = a2.lock().unwrap_or_else(|e| e.into_inner()); // panic-poisoned by design
                             let c = m.entry((id, s)).or_insert(0);
                             *c += 1;
                             if *c == 1 {
@@ -205,7 +212,7 @@ fn zoo(attempts: Attempts) -> Arc<Registry> {
                     let a2 = Arc::clone(&a2);
                     let id = id.clone();
                     async move {
-                        let mut m = a2.lock().unwrap();
+                        let mut m = a2.lock().unwrap_or_else(|e| e.into_inner()); // panic-poisoned by design
                         let c = m.entry((id, 0)).or_insert(0);
                         *c += 1;
                         if *c == 1 {
@@ -298,6 +305,8 @@ struct World {
     rng: SimRng,
     /// Everything ever started: id -> (kind, input).
     started: BTreeMap<String, (String, u64)>,
+    /// Live handles (durability-acked results appear via these).
+    handles: BTreeMap<String, WorkflowHandle>,
     /// Signals owed to waity workflows: (id, payload).
     owed_signals: Vec<(String, u64)>,
     /// Completions observed (id -> decoded output or None for errors).
@@ -345,6 +354,7 @@ impl World {
             sched: None,
             rng: SimRng::new(seed).fork("dst-driver"),
             started: BTreeMap::new(),
+            handles: BTreeMap::new(),
             owed_signals: Vec::new(),
             completed: BTreeMap::new(),
             cancelled: BTreeSet::new(),
@@ -379,6 +389,20 @@ impl World {
         }
     }
 
+    /// Start with the input type the kind's definition takes: `sum`,
+    /// `flaky`, `sleepy` take a `u64`; `panicky`, `waity`, `twin` take `()`.
+    fn start_kind(
+        sched: &mut SimScheduler,
+        id: &str,
+        kind: &str,
+        input: u64,
+    ) -> Result<WorkflowHandle, Rejected> {
+        match kind {
+            "panicky" | "waity" | "twin" => sched.start(id, kind, &()),
+            _ => sched.start(id, kind, &input),
+        }
+    }
+
     fn rebuild(&mut self) -> bool {
         if self.disk.is_crashed() {
             self.disk.recover();
@@ -394,7 +418,16 @@ impl World {
             self.config.clone(),
             self.clock.clone(),
         ) {
-            Ok(s) => {
+            Ok(mut s) => {
+                // Old handles died with the old engines: re-attach for every
+                // started, not-yet-durably-completed workflow that survived.
+                for id in self.started.keys() {
+                    if !self.completed.contains_key(id) {
+                        if let Ok(h) = s.handle(&**id) {
+                            self.handles.insert(id.clone(), h);
+                        }
+                    }
+                }
                 self.sched = Some(s);
                 true
             }
@@ -407,7 +440,14 @@ impl World {
 
     fn ensure_sched(&mut self) {
         let mut guard = 0;
-        while self.sched.is_none() || self.disk.is_crashed() {
+        // A poisoned engine (permanent storage failure after an injected
+        // write/sync error) needs a process restart, same as an operator
+        // would give it; the page cache (applied view) survives — only a
+        // machine crash loses pending writes.
+        while self.sched.is_none()
+            || self.disk.is_crashed()
+            || self.sched.as_ref().is_some_and(|s| s.storage_failed())
+        {
             self.sched = None;
             if self.rebuild() {
                 break;
@@ -430,20 +470,68 @@ impl World {
         self.ensure_sched();
     }
 
+    /// Record durability-acknowledged completions: a handle resolves Ok only
+    /// after the terminal record's fsync, so anything recorded here is a
+    /// promise the system must keep across every later crash.
     fn harvest(&mut self) {
-        // Record observed completions + coverage counters.
-        let Some(sched) = &self.sched else { return };
-        for (id, state) in sched.states() {
-            if state == StateKind::Completed && !self.completed.contains_key(id.as_str()) {
-                // decode via a watcher
+        let mut newly = Vec::new();
+        for (id, h) in &self.handles {
+            if self.completed.contains_key(id) {
+                continue;
             }
-            let _ = state;
-            let _ = id;
+            if let Some(Ok(bytes)) = h.peek() {
+                let out: Option<u64> = sqrl_core::codec::from_slice(&bytes, "out").ok();
+                newly.push((id.clone(), out));
+            }
         }
-        for m in sched.metrics() {
-            // metrics are cumulative per engine incarnation; coverage sums
-            // increments conservatively via max-so-far semantics per rebuild.
-            let _ = m;
+        for (id, out) in newly {
+            // The durability invariant, checked at the instant of the ack:
+            // even if EVERY unsynced byte were lost right now, recovery must
+            // still see this workflow as completed.
+            if std::env::var("SQRL_DST_PARANOID").is_ok() {
+                let fork = self.disk.fork_durable_only(1);
+                let storage =
+                    WalStorage::open_with(Arc::new(fork), World::wal_opts()).expect("fork open");
+                use sqrl_core::Storage as _;
+                let mut found = false;
+                let mut diag: Vec<String> = Vec::new();
+                for sh in 0..storage.num_shards() {
+                    let mut shard = storage.open_shard(sh).expect("fork shard");
+                    match shard.read(&WorkflowId::new(id.clone())) {
+                        Ok(r) => {
+                            let term_snap = r
+                                .snapshot
+                                .as_ref()
+                                .is_some_and(|x| x.meta.terminal.is_some());
+                            let term_rec = r.records.iter().any(|x| {
+                                matches!(x.event, sqrl_core::JournalEvent::WorkflowCompleted { .. })
+                            });
+                            if term_snap || term_rec {
+                                found = true;
+                            } else {
+                                diag.push(format!(
+                                    "shard {sh}: snap={:?} recs={:?}",
+                                    r.snapshot
+                                        .as_ref()
+                                        .map(|x| (x.upto, x.meta.terminal.clone())),
+                                    r.records
+                                        .iter()
+                                        .map(|x| (x.index, x.event.kind()))
+                                        .collect::<Vec<_>>()
+                                ));
+                            }
+                        }
+                        Err(e) => diag.push(format!("shard {sh}: read err {e}")),
+                    }
+                }
+                assert!(
+                    found,
+                    "seed {}: completion of {id} acked but NOT durable\n{}",
+                    self.seed,
+                    diag.join("\n")
+                );
+            }
+            self.completed.insert(id, out);
         }
     }
 
@@ -457,6 +545,9 @@ impl World {
             }
         }
         let choice = self.rng.next_below(100);
+        if std::env::var("SQRL_DST_DEBUG").is_ok() {
+            eprintln!("OP choice={choice}");
+        }
         match choice {
             0..=34 => {
                 let kinds = ["sum", "flaky", "panicky", "sleepy", "waity", "twin"];
@@ -465,12 +556,19 @@ impl World {
                 let id = format!("{kind}-{n}");
                 let input: u64 = 1 + self.rng.next_below(6);
                 let sched = self.sched.as_mut().expect("sched");
-                match sched.start(&*id, kind, &input) {
-                    Ok(_) | Err(Rejected::AlreadyExists(_)) => {
+                if std::env::var("SQRL_DST_DEBUG").is_ok() {
+                    eprintln!("START {id}");
+                }
+                match World::start_kind(sched, &id, kind, input) {
+                    Ok(h) => {
                         self.started.insert(id.clone(), (kind.to_string(), input));
+                        self.handles.insert(id.clone(), h);
                         if kind == "waity" {
                             self.owed_signals.push((id, 1 + self.rng.next_below(100)));
                         }
+                    }
+                    Err(Rejected::AlreadyExists(_)) => {
+                        self.started.insert(id.clone(), (kind.to_string(), input));
                     }
                     Err(Rejected::Backpressure { .. }) => {
                         self.coverage.backpressure += 1;
@@ -555,7 +653,10 @@ impl World {
         }
     }
 
-    /// Fault-free drain: deliver owed signals, run everything to quiescence.
+    /// Fault-free drain with client-retry semantics: a start whose record
+    /// never became durable legitimately vanishes on crash (at-least-once);
+    /// a real client would retry it, so the drain does, until every started
+    /// workflow exists and terminates.
     fn drain(&mut self) {
         self.disk.set_faults(FaultConfig {
             p_write_error: 0.0,
@@ -563,28 +664,84 @@ impl World {
             ..base_faults()
         });
         self.fault_window = 0;
-        self.ensure_sched();
-        let owed = std::mem::take(&mut self.owed_signals);
-        for (id, payload) in owed {
-            if self.cancelled.contains(&id) {
-                continue;
+        for _round in 0..12 {
+            self.ensure_sched();
+            // 1. Re-start lost workflows (start record never fsynced).
+            let states = self.sched.as_ref().expect("sched").states();
+            let missing: Vec<(String, String, u64)> = self
+                .started
+                .iter()
+                .filter(|(id, _)| !states.contains_key(&WorkflowId::new((*id).clone())))
+                .map(|(id, (k, i))| (id.clone(), k.clone(), *i))
+                .collect();
+            for (id, kind, input) in missing {
+                let sched = self.sched.as_mut().expect("sched");
+                match World::start_kind(sched, &id, &kind, input) {
+                    Ok(h) => {
+                        self.handles.insert(id.clone(), h);
+                        if kind == "waity"
+                            && !self.owed_signals.iter().any(|(o, _)| *o == id)
+                            && !self.cancelled.contains(&id)
+                        {
+                            self.owed_signals.push((id, 1));
+                        }
+                    }
+                    Err(e) => {
+                        if std::env::var("SQRL_DST_DEBUG").is_ok() {
+                            eprintln!("DRAIN restart {id} failed: {e}");
+                        }
+                    }
+                }
+            }
+            // 2. Deliver owed signals.
+            let owed = std::mem::take(&mut self.owed_signals);
+            for (id, payload) in owed {
+                if self.cancelled.contains(&id) {
+                    continue;
+                }
+                self.ensure_sched();
+                let sched = self.sched.as_mut().expect("sched");
+                if sched.signal(&*id, "go", &payload).is_ok() {
+                    self.coverage.signals += 1;
+                }
+            }
+            // 3. Any waity still Blocked gets a wake-up (its signal may have
+            // been lost with an unsynced suffix).
+            self.ensure_sched();
+            let blocked: Vec<String> = {
+                let sched = self.sched.as_mut().expect("sched");
+                sched
+                    .states()
+                    .iter()
+                    .filter(|(id, st)| {
+                        **st == StateKind::Blocked && id.as_str().starts_with("waity-")
+                    })
+                    .map(|(id, _)| id.to_string())
+                    .collect()
+            };
+            for id in blocked {
+                if self.cancelled.contains(&id) {
+                    continue;
+                }
+                let sched = self.sched.as_mut().expect("sched");
+                let _ = sched.signal(&*id, "go", &1u64);
             }
             self.ensure_sched();
             let sched = self.sched.as_mut().expect("sched");
-            match sched.signal(&*id, "go", &payload) {
-                Ok(()) => self.coverage.signals += 1,
-                Err(_) => {
-                    // terminal already (cancelled/failed) or crashed; retry
-                    // once after ensure.
-                    self.ensure_sched();
-                    let sched = self.sched.as_mut().expect("sched");
-                    let _ = sched.signal(&*id, "go", &payload);
-                }
+            sched.run_until_idle();
+            self.harvest();
+            // Converged?
+            let states = self.sched.as_ref().expect("sched").states();
+            let all_terminal = self.started.keys().all(|id| {
+                matches!(
+                    states.get(&WorkflowId::new(id.clone())),
+                    Some(StateKind::Completed | StateKind::Failed | StateKind::Cancelled)
+                )
+            });
+            if all_terminal {
+                break;
             }
         }
-        self.ensure_sched();
-        let sched = self.sched.as_mut().expect("sched");
-        sched.run_until_idle();
     }
 
     fn collect_metrics_coverage(&mut self) {
@@ -653,20 +810,32 @@ fn run_seed(seed: u64, ops: u64) -> SeedRun {
     let attempts: Attempts = Arc::default();
     for _ in 0..ops {
         w.op(&attempts);
-        // Safety: previously observed completions never regress.
+        w.harvest();
+        // Safety: durably-acknowledged completions never regress. The one
+        // legal exception is deliberate bit rot (corruption-mode seeds):
+        // CRC truncation cuts the logical WAL stream at the flipped byte,
+        // voiding every durable suffix behind it — acked completions
+        // included (docs/on-disk-format.md). Such a voided ack turns the
+        // workflow back into a lost start; the client-retry drain re-runs it.
         if let Some(sched) = &w.sched {
-            for (id, out) in &w.completed {
-                if let Some(state) = sched.states().get(&WorkflowId::new(id.clone())) {
-                    assert_eq!(
-                        *state,
-                        StateKind::Completed,
-                        "seed {seed}: completed workflow {id} regressed to {state:?}"
+            let states = sched.states();
+            let mut voided: Vec<String> = Vec::new();
+            for id in w.completed.keys() {
+                let state = states.get(&WorkflowId::new(id.clone()));
+                if state != Some(&StateKind::Completed) {
+                    assert!(
+                        corruption_mode && w.coverage.corruption_truncations > 0,
+                        "seed {seed}: durably-completed workflow {id} regressed to {state:?}"
                     );
+                    voided.push(id.clone());
                 }
-                let _ = out;
+            }
+            for id in voided {
+                w.coverage.corruption_regressions += 1;
+                w.completed.remove(&id);
+                w.handles.remove(&id);
             }
         }
-        w.harvest();
     }
     w.drain();
     w.collect_metrics_coverage();
@@ -675,6 +844,15 @@ fn run_seed(seed: u64, ops: u64) -> SeedRun {
     // Liveness + output ground truth (relaxed only in corruption mode, where
     // bit rot may legally erase un-superseded suffixes of history).
     if !corruption_mode {
+        // Durably-acked completions must appear in the final digest with the
+        // same value.
+        for (id, out) in &w.completed {
+            assert_eq!(
+                digest.completed.get(id),
+                Some(out),
+                "seed {seed}: acked completion of {id} changed or vanished"
+            );
+        }
         for (id, (kind, input)) in &w.started {
             let state = digest.final_states.get(id);
             assert!(
@@ -745,8 +923,20 @@ fn run_range(seeds: std::ops::Range<u64>, ops: u64, check_determinism_every: u64
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow: run in release (CI acceptance job)")]
 fn dst_short() {
-    let cov = run_range(0..48, 160, 8);
-    cov.assert_sometimes();
+    // SQRL_DST_START / SQRL_DST_END narrow the seed range when reproducing a
+    // single failing seed (coverage assertions only apply to the full range).
+    let start: u64 = std::env::var("SQRL_DST_START")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let end: u64 = std::env::var("SQRL_DST_END")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(48);
+    let cov = run_range(start..end, 160, 8);
+    if (start, end) == (0, 48) {
+        cov.assert_sometimes();
+    }
 }
 
 /// The long haul: `cargo test -p sqrl-tests --release dst_long -- --ignored --nocapture`

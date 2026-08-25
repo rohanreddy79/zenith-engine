@@ -106,8 +106,16 @@ fn snapshot_replay_is_10x_faster_than_full_replay() {
         "workload must journal >= 100k events, got {records_full}"
     );
 
-    let t_full = time_recovery(dir_full.path(), u64::MAX);
-    let t_snap = time_recovery(dir_snap.path(), 1_000);
+    // Min of 3: recovery here is milliseconds-scale, so one cold page cache
+    // or a suite neighbor's I/O flush can multiply a single sample.
+    let t_full = (0..3)
+        .map(|_| time_recovery(dir_full.path(), u64::MAX))
+        .min()
+        .expect("samples");
+    let t_snap = (0..3)
+        .map(|_| time_recovery(dir_snap.path(), 1_000))
+        .min()
+        .expect("samples");
 
     // Correctness of the lazy path: the recovered workflow still works.
     {

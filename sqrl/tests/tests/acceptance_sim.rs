@@ -123,6 +123,15 @@ fn drive_to_completion(
             Err(other) => panic!("unexpected admission error: {other}"),
         };
         sched.run_until_idle();
+        if std::env::var("SQRL_SWEEP_DEBUG").is_ok() {
+            eprintln!(
+                "  drive: restart={_restart} ops={} crashed={} states={:?} now={}",
+                disk.op_count(),
+                disk.is_crashed(),
+                sched.states(),
+                sched.now()
+            );
+        }
         if disk.is_crashed() {
             continue;
         }
@@ -139,12 +148,14 @@ fn drive_to_completion(
 
 /// How many disk ops one clean run needs (bounds the crash sweep).
 fn clean_run_ops() -> u64 {
+    eprintln!("sweep: clean run starting");
     let effects: SharedEffects = Arc::default();
     let disk = SimDisk::new(999);
     let clock = SimClock::new(LogicalTime::from_millis(1_000));
     let out = drive_to_completion(&disk, &clock, 7, saga_registry(effects), &strict_cfg())
         .expect("clean run completes");
     assert_eq!(out, 501);
+    eprintln!("sweep: clean run done, ops={}", disk.op_count());
     disk.op_count()
 }
 
@@ -153,8 +164,18 @@ fn clean_run_ops() -> u64 {
 fn crash_at_every_boundary_saga_completes_effectively_once() {
     let max_ops = clean_run_ops();
     assert!(max_ops > 20, "sweep must have real coverage, got {max_ops}");
+    // Optional range override for bisection: SQRL_SWEEP_START/SQRL_SWEEP_END.
+    let start: u64 = std::env::var("SQRL_SWEEP_START")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let end: u64 = std::env::var("SQRL_SWEEP_END")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(max_ops);
     let mut crash_points_hit = 0u64;
-    for crash_at in 1..=max_ops {
+    for crash_at in start..=end.min(max_ops) {
+        eprintln!("sweep: crash_at={crash_at}/{max_ops}");
         let effects: SharedEffects = Arc::default();
         let disk = SimDisk::new(31); // fixed disk seed: loss pattern varies per op point
         let clock = SimClock::new(LogicalTime::from_millis(1_000));

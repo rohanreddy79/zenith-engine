@@ -229,6 +229,14 @@ impl SimScheduler {
         all
     }
 
+    /// True if any shard's storage has failed permanently (poisoned): the
+    /// engine halts; drop this scheduler and rebuild over recovered storage.
+    pub fn storage_failed(&self) -> bool {
+        self.engines
+            .iter()
+            .any(|e| e.borrow().storage_error().is_some())
+    }
+
     /// Combined engine metrics.
     pub fn metrics(&self) -> Vec<EngineMetrics> {
         self.engines.iter().map(|e| e.borrow().metrics()).collect()

@@ -428,6 +428,13 @@ impl EngineCore {
     /// Returns step dispatches for the driver plus the next wake deadline.
     pub fn tick(&mut self) -> TickOutput {
         let now = self.clock.now();
+        if self.storage_failed.is_some() {
+            self.tick_poisoned(now);
+            return TickOutput {
+                dispatches: Vec::new(),
+                next_wake: None,
+            };
+        }
         loop {
             let mut progressed = false;
             while let Some(cmd) = self.cmds.pop_front() {
@@ -462,6 +469,62 @@ impl EngineCore {
         }
     }
 
+    /// Storage has failed permanently: nothing can be journaled, so nothing
+    /// may progress. Answer observers, reject everything else. The process
+    /// restarts to recover (spec: halt commits, apply backpressure).
+    fn tick_poisoned(&mut self, now: LogicalTime) {
+        let err_text = self
+            .storage_failed
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "storage failed".to_string());
+        while let Some(cmd) = self.cmds.pop_front() {
+            match cmd {
+                EngineCmd::Start { admit, .. } => {
+                    admit.complete(Err(Rejected::Unavailable(err_text.clone())));
+                }
+                EngineCmd::Signal { ack, .. } | EngineCmd::Cancel { ack, .. } => {
+                    ack.complete(Err(Error::Storage(
+                        self.storage_failed
+                            .clone()
+                            .unwrap_or(StorageError::Disk("storage failed".to_string())),
+                    )));
+                }
+                EngineCmd::Watch { id, terminal, ack } => match self.instances.get_mut(&id) {
+                    Some(Slot::Terminal(t)) => {
+                        terminal.complete(t.result.clone());
+                        ack.complete(Ok(()));
+                    }
+                    Some(Slot::Active(inst)) => {
+                        inst.watchers.push(terminal);
+                        ack.complete(Ok(()));
+                    }
+                    Some(Slot::Passive(p)) => {
+                        p.watchers.push(terminal);
+                        ack.complete(Ok(()));
+                    }
+                    None => {
+                        ack.complete(Err(Error::App(format!("unknown workflow `{id}`"))));
+                    }
+                },
+                EngineCmd::StepFinished { .. } | EngineCmd::Tick => {}
+                EngineCmd::Status { reply } => {
+                    self.handle_cmd(EngineCmd::Status { reply }, now);
+                }
+                EngineCmd::Metrics { reply } => {
+                    reply.complete((self.metrics, self.storage.stats()));
+                }
+                EngineCmd::Shutdown => {
+                    self.shutdown = true;
+                }
+            }
+        }
+        // Timers and dispatches are dropped: recovery after restart re-arms
+        // them from the journal's durable prefix.
+        self.timers.clear();
+        self.dispatches.clear();
+    }
+
     fn timers_due(&self, now: LogicalTime) -> bool {
         self.timers
             .keys()
@@ -478,7 +541,7 @@ impl EngineCore {
         if let Some((t, _)) = self.timers.keys().next() {
             consider(*t);
         }
-        if self.unsynced_records > 0 {
+        if self.unsynced_records > 0 && self.storage_failed.is_none() {
             match self.config.fsync {
                 FsyncPolicy::Strict => consider(now),
                 FsyncPolicy::Group { max_delay, .. } => {
@@ -2200,6 +2263,111 @@ fn load_instance(
         terminal_value: None,
         terminal_acked: false,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Pure replay validation (pre-deploy non-determinism check)
+// ---------------------------------------------------------------------------
+
+/// Outcome of [`validate_history`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidationOutcome {
+    /// History replays cleanly; the workflow would suspend awaiting live
+    /// input (step result, timer, or signal).
+    Suspends,
+    /// History replays cleanly to completion.
+    Completes,
+    /// History replays cleanly to a journaled terminal failure.
+    Fails,
+    /// The workflow is already terminal in storage (nothing to validate).
+    AlreadyTerminal,
+}
+
+/// Replay a stored history against the *currently registered* code without
+/// executing any step, arming any timer, or writing anything — the
+/// mechanical pre-deploy answer to "will this code change strand any
+/// running workflow?". Returns the typed
+/// [`NonDeterminismError`](crate::error::NonDeterminismError) exactly as
+/// the engine would raise it at recovery. See
+/// `docs/versioning-and-patching.md`.
+pub fn validate_history(
+    registry: &Registry,
+    config: &EngineConfig,
+    readout: JournalReadout,
+    id: &WorkflowId,
+) -> Result<ValidationOutcome, Error> {
+    if matches!(summarize(&readout), Summary::Terminal { .. }) {
+        return Ok(ValidationOutcome::AlreadyTerminal);
+    }
+    let mut inst = match load_instance(registry, config, readout, id, LogicalTime::ZERO) {
+        Loaded::Active(inst) => inst,
+        Loaded::Terminal(_) => return Ok(ValidationOutcome::AlreadyTerminal),
+        Loaded::Corrupt(msg) => return Err(Error::App(msg)),
+    };
+    loop {
+        let poll = {
+            let Some(fut) = inst.fut.as_mut() else {
+                return Ok(ValidationOutcome::AlreadyTerminal);
+            };
+            let waker = Waker::noop();
+            let mut cx = TaskContext::from_waker(waker);
+            catch_unwind(AssertUnwindSafe(|| fut.as_mut().poll(&mut cx)))
+        };
+        // Drain (and discard) effects: validation never executes anything.
+        let nd = {
+            let mut cell = inst.cell.borrow_mut();
+            cell.new_events.clear();
+            cell.new_steps.clear();
+            cell.new_timers.clear();
+            cell.nd_error.clone()
+        };
+        if let Some(nd) = nd {
+            return Err(Error::NonDeterminism(nd));
+        }
+        match poll {
+            Err(payload) => return Err(Error::OrchestrationPanic(panic_message(payload))),
+            Ok(Poll::Ready(Ok(_))) => return Ok(ValidationOutcome::Completes),
+            Ok(Poll::Ready(Err(_))) => return Ok(ValidationOutcome::Fails),
+            Ok(Poll::Pending) => {
+                let Some(q) = inst.reveals.pop_front() else {
+                    return Ok(ValidationOutcome::Suspends);
+                };
+                // Inline minimal reveal (mirrors EngineCore::reveal without
+                // engine bookkeeping).
+                let mut cell = inst.cell.borrow_mut();
+                if q.from_history {
+                    cell.unrevealed = cell.unrevealed.saturating_sub(1);
+                }
+                match q.reveal {
+                    Reveal::StepOk { seq, bytes, at } => {
+                        cell.wf_time = cell.wf_time.max(at);
+                        cell.resolved.insert(seq, Resolution::StepOk(bytes));
+                    }
+                    Reveal::StepErr {
+                        seq,
+                        error,
+                        attempts,
+                        at,
+                    } => {
+                        cell.wf_time = cell.wf_time.max(at);
+                        cell.resolved
+                            .insert(seq, Resolution::StepErr { error, attempts });
+                    }
+                    Reveal::Timer { seq, at } => {
+                        cell.wf_time = cell.wf_time.max(at);
+                        cell.resolved.insert(seq, Resolution::Timer);
+                    }
+                    Reveal::Signal { name, payload, at } => {
+                        cell.wf_time = cell.wf_time.max(at);
+                        cell.signal_buf.entry(name).or_default().push_back(payload);
+                    }
+                    Reveal::Resumed { at } => {
+                        cell.wf_time = cell.wf_time.max(at);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
