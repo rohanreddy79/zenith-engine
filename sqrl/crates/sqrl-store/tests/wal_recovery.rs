@@ -3,7 +3,7 @@
 //! data survives any crash; recovery truncates cleanly at corruption**.
 
 use sqrl_core::event::{JournalEvent, JournalRecord};
-use sqrl_core::snapshot::{SnapshotRecord, SnapshotState};
+use sqrl_core::snapshot::{SnapshotMeta, SnapshotRecord};
 use sqrl_core::storage::{AppendEntry, AppendPayload};
 use sqrl_core::{LogicalTime, Storage, StorageError, StorageShard, WorkflowId};
 use sqrl_sim::{FaultConfig, SimDisk};
@@ -29,10 +29,11 @@ fn snap(wf: &str, upto: u64) -> AppendEntry {
         workflow: WorkflowId::new(wf),
         payload: AppendPayload::Snapshot(SnapshotRecord {
             upto,
-            state: SnapshotState {
+            meta: SnapshotMeta {
                 wf_time: LogicalTime::from_millis(upto),
-                ..SnapshotState::default()
+                ..SnapshotMeta::default()
             },
+            body: Vec::new(),
         }),
     }
 }

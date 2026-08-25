@@ -12,6 +12,7 @@ sqrl-core.workspace = true
 sqrl-sim.workspace = true
 sqrl-store.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

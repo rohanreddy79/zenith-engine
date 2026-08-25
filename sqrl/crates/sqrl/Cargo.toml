@@ -13,9 +13,9 @@ readme = "../../README.md"
 
 [features]
 default = []
-# Swap the per-core step dispatch for a Tokio work-stealing pool sized to all
-# cores (benchmarked in Phase 2 for skewed workloads). Orchestration remains
-# thread-per-core either way.
+# Dynamic least-loaded placement of NEW workflows across cores instead of
+# static hash placement (benchmarked in Phase 2 for skewed id distributions).
+# Orchestration remains thread-per-core; steps always run on the shared pool.
 work-stealing = []
 
 [dependencies]

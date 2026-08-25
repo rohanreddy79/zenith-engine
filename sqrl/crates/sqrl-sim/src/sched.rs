@@ -139,7 +139,10 @@ impl SimScheduler {
             admit: admit_c,
             terminal: term_c,
         });
-        self.run_until_idle();
+        // Process work due *now* (admission included) without advancing
+        // virtual time; the caller decides when time moves.
+        let now = self.now();
+        self.run_bounded(Some(now));
         match admit_w.peek() {
             Some(Ok(())) => Ok(WorkflowHandle::new(id, term_w)),
             Some(Err(rej)) => Err(rej),
@@ -159,7 +162,8 @@ impl SimScheduler {
             terminal: term_c,
             ack: ack_c,
         });
-        self.run_until_idle();
+        let now = self.now();
+        self.run_bounded(Some(now));
         match ack_w.peek() {
             Some(Ok(())) => Ok(WorkflowHandle::new(id, term_w)),
             Some(Err(e)) => Err(e),
@@ -182,10 +186,24 @@ impl SimScheduler {
             payload,
             ack: ack_c,
         });
-        self.run_until_idle();
+        let now = self.now();
+        self.run_bounded(Some(now));
         ack_w
             .peek()
             .unwrap_or_else(|| Err(Error::App("signal not acknowledged".to_string())))
+    }
+
+    /// Clean shutdown: every engine snapshots its quiescent workflows and
+    /// fsyncs, making the next open lazy (O(metadata) recovery).
+    pub fn shutdown(&mut self) {
+        for shard in 0..self.num_shards {
+            self.queue
+                .lock()
+                .expect("sim queue lock poisoned")
+                .push_back((shard, EngineCmd::Shutdown));
+        }
+        let now = self.now();
+        self.run_bounded(Some(now));
     }
 
     /// Cancel a workflow.
@@ -195,7 +213,8 @@ impl SimScheduler {
             id: id.into(),
             ack: ack_c,
         });
-        self.run_until_idle();
+        let now = self.now();
+        self.run_bounded(Some(now));
         ack_w
             .peek()
             .unwrap_or_else(|| Err(Error::App("cancel not acknowledged".to_string())))
@@ -228,6 +247,12 @@ impl SimScheduler {
     /// except workflows blocked on external input). Virtual time advances as
     /// needed. Returns the number of engine ticks performed.
     pub fn run_until_idle(&mut self) -> u64 {
+        self.run_bounded(None)
+    }
+
+    /// Like [`SimScheduler::run_until_idle`] but never advances virtual time
+    /// beyond `limit`.
+    fn run_bounded(&mut self, limit: Option<LogicalTime>) -> u64 {
         let mut ticks = 0u64;
         loop {
             let mut progress = false;
@@ -288,7 +313,7 @@ impl SimScheduler {
                 .split_off(&(self.now().as_millis() + 1));
             // 3. One executor scheduling step (a task poll or a virtual time
             // advance). Steps may enqueue commands, picked up next iteration.
-            let exec_progress = self.exec.step();
+            let exec_progress = self.exec.step_bounded(limit);
             if !progress && !exec_progress {
                 let queue_empty = self
                     .queue
@@ -302,18 +327,17 @@ impl SimScheduler {
         }
     }
 
-    /// Run for a bounded amount of virtual time (advancing the clock at the
-    /// end if the system went idle earlier).
+    /// Run for a bounded amount of virtual time: processes everything due up
+    /// to `now + d`, then parks the clock exactly there. Work scheduled
+    /// beyond the horizon stays pending.
     pub fn run_for(&mut self, d: Duration) {
         let target = self.now() + d;
-        while self.now() < target {
-            self.run_until_idle();
-            if self.now() < target {
-                // Nothing left to do before target: jump.
-                self.clock.advance_to(target);
-                self.run_until_idle();
+        loop {
+            self.run_bounded(Some(target));
+            if self.now() >= target {
                 break;
             }
+            self.clock.advance_to(target);
         }
     }
 }

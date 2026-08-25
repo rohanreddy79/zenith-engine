@@ -18,85 +18,93 @@ reproduction instructions for a human)_
 - [x] Licenses (MIT + Apache-2.0), `rust-toolchain.toml` (pinned stable), `.gitignore`
 - [x] CI workflow (`.github/workflows/ci.yml` at repo root, workspace under `sqrl/`)
 - [x] Clippy `disallowed-methods` config enforcing injected time/entropy
-- [ ] Decision log complete (`docs/adr/`): thread-per-core vs work-stealing, WAL
-      format, fsync policy, serialization format, at-least-once semantics,
-      snapshot strategy, versioning API
+- [x] Decision log complete (`docs/adr/0001`–`0007`): thread-per-core vs
+      work-stealing, WAL format, fsync policy, serialization format,
+      at-least-once semantics, snapshot strategy, versioning API
+      (skew-benchmark addendum to 0001 lands in Phase 2)
 
 ## Phase 1 — MVP: the core durable loop
 
 Ordering constraint honored: **simulator before executor**.
 
 ### 1.1 sqrl-sim (deterministic substrate — built FIRST)
-- [ ] `SimRng`: seeded, splittable deterministic RNG
-- [ ] `SimClock`: virtual time, manual/auto advance
-- [ ] `SimScheduler`: seeded single-threaded executor, virtual time, deterministic
-      task ordering; implements the `Scheduler` trait from `sqrl-core`
-- [ ] `SimDisk`: in-memory VFS implementing `sqrl-core::vfs::Vfs` with fault
-      injection: crash (lose unsynced writes), torn write, bit flip/corruption,
-      disk-full, slow I/O
-- [ ] Test: two runs with the same seed produce byte-identical traces
-- [ ] Test: crash semantics — unsynced writes may vanish; synced writes never do
+- [x] `SimRng`: seeded, forkable deterministic RNG (SplitMix64)
+- [x] `SimClock`: virtual time, manual/auto advance
+- [x] `SimScheduler`: seeded single-threaded driver over EngineCore shards +
+      `SimExecutor` (seeded task ordering, virtual time)
+- [x] `SimDisk`: in-memory VFS implementing `sqrl-core::vfs::Vfs` with fault
+      injection: crash (lose/tear unsynced writes, resurrect deletes, atomic
+      renames), bit flip, disk-full, injected I/O errors, virtual latency
+- [x] Test: two runs with the same seed produce byte-identical traces
+- [x] Test: crash semantics — unsynced writes may vanish; synced writes never do
 
 ### 1.2 sqrl-core (engine)
-- [ ] Journal event types (all listed in §2.1) with versioned serialization
-- [ ] `Clock` / `Rng` / `Scheduler` / `vfs::Vfs` traits (injection points)
-- [ ] Lifecycle state machine, exhaustive match, typed `IllegalTransition` error
-- [ ] `Ctx`: `step`, `step_with`, `sleep`, `sleep_until`, `await_signal`, `now`,
-      `random`, `uuid`, `idempotency_key`, `patched`
-- [ ] Replay engine: journal cursor, command/event matching, snapshot-aware
-- [ ] `NonDeterminismError` (typed, expected-vs-actual) → `Failed(NonDeterministic)`,
+- [x] Journal event types (all listed in §2.1) with versioned serialization
+- [x] `Clock` / `Entropy` / `Scheduler` / `vfs::Vfs` traits (injection points)
+- [x] Lifecycle state machine, exhaustive match, typed `IllegalTransition` error
+- [x] `Ctx`: `step`, `step_with`, `sleep`, `sleep_until`, `await_signal`, `now`,
+      `random`, `random_f64`, `uuid`, `idempotency_key`, `patched`
+- [x] Replay engine: ordered revelation queue, command/event matching,
+      snapshot-aware, lazy recovery from quiescence snapshots
+- [x] `NonDeterminismError` (typed, expected-vs-actual) → `Failed(NonDeterministic)`,
       never a retry loop
-- [ ] `RetryPolicy`: exponential backoff + deterministic jitter; max attempts → Failed
-- [ ] Panic in step → caught (`catch_unwind` at step-pool boundary) → `StepFailed`
-- [ ] Panic in orchestration → `WorkflowError::OrchestrationPanic`
-- [ ] Durable timers on logical time
-- [ ] Signals: buffered, journaled, durable across restart
-- [ ] Snapshot state (command-result table) + compaction trigger every K events
-- [ ] Payload size limit (default 1 MiB) with clear error
-- [ ] Unit tests for every module
+- [x] `RetryPolicy`: exponential backoff + deterministic jitter; max attempts → Failed
+- [x] Panic in step → caught (`catch_unwind` at step boundary) → `StepFailed`
+- [x] Panic in orchestration → `Error::OrchestrationPanic`
+- [x] Durable timers on logical time
+- [x] Signals: buffered, journaled, durable across restart
+- [x] Snapshot meta/body split + amortized compaction cadence + shutdown &
+      passivation quiescence snapshots
+- [x] Payload size limit (default 1 MiB) with clear error
+- [x] Unit tests for every module (+16 engine end-to-end tests)
 
 ### 1.3 sqrl-store
-- [ ] `Storage` trait (append batch, read journal, snapshots, sync, list)
-- [ ] `MemoryStorage` (tests)
-- [ ] WAL record codec: `[len u32][crc32c u32][type u8][fmt_version u8][payload]`
-- [ ] Segmented log (roll at configurable size, default 64 MiB)
-- [ ] `MANIFEST` (atomic rewrite: tmp + fsync + rename + dir fsync), checksummed
-- [ ] Group commit: `FsyncPolicy::{Strict, Group{max_delay,max_batch}, Relaxed{interval}}`,
-      per-step override
-- [ ] Snapshots + segment GC once all workflows have newer snapshots
-- [ ] Recovery: truncate at first invalid record, log byte offset, fall back to
+- [x] `Storage`/`StorageShard` traits (append batch, sync barrier, read, list,
+      maintain, stats)
+- [x] `MemoryStorage` (tests)
+- [x] WAL record codec: `[len u32][crc32c u32][type u8][fmt_version u8][payload]`
+- [x] Segmented log (roll at configurable size, default 64 MiB)
+- [x] `MANIFEST` (atomic rewrite: tmp + fsync + rename + dir fsync), checksummed,
+      degrades to directory scan when missing/corrupt
+- [x] Group commit: `FsyncPolicy::{Strict, Group{max_delay,max_batch}, Relaxed{interval}}`,
+      per-step override (`StepOptions::fsync_strict`)
+- [x] Snapshots + segment GC (durable-snapshot gated)
+- [x] Recovery: truncate at first invalid record, log byte offset, fall back to
       snapshot
-- [ ] Disk-full / write error → `StorageError::Disk`, halt commits, backpressure
-- [ ] Runs on both `StdVfs` (real files) and `SimDisk`
+- [x] Disk-full / write error → `StorageError::{Disk,DiskFull}`, poison shard,
+      backpressure
+- [x] Runs on both `StdVfs` (real files) and `SimDisk` (120-point crash sweep)
 
 ### 1.4 sqrl-macros
-- [ ] `#[workflow(name, version)]` proc macro
-- [ ] `#[step]` helper macro
-- [ ] Expansion/unit tests for the macros
+- [x] `#[workflow(name, version)]` proc macro
+- [x] `#[step]` helper macro (validation marker)
+- [x] Expansion/unit tests for the macros (19) + facade integration test
 
 ### 1.5 RealScheduler (only after engine green on SimScheduler)
-- [ ] Thread-per-core executor: N threads, per-core run queue, per-core WAL segment,
-      `hash(workflow_id) % N` sharding
-- [ ] Step pool (Tokio multi-thread, steps only) behind a clear boundary
-- [ ] Bounded in-flight workflows per core + `Rejected::Backpressure`
-- [ ] Passivation: LRU idle eviction, reload from snapshot+journal
+- [x] Thread-per-core executor: N threads, per-core engine + storage shard,
+      `fnv1a64(workflow_id) % N` sharding
+- [x] Step pool (Tokio multi-thread, steps only) behind a clear boundary
+- [x] Bounded in-flight workflows per core + `Rejected::Backpressure`
+- [x] Passivation: idle eviction with quiescence snapshot, reload on demand
 
 ### 1.6 Examples
-- [ ] `examples/checkout_saga`
-- [ ] `examples/crash_me` (kill -9 recovery demo)
+- [x] `examples/checkout_saga`
+- [x] `examples/crash_me` (kill -9 recovery demo)
 
 ### Phase 1 acceptance gate
-- [ ] crash-at-every-boundary test (SimDisk + real subprocess kill -9)
-- [ ] Durable sleep survives restart (sim virtual time + real 2s sleep w/ kill)
-- [ ] Signal wakes durably blocked workflow after restart
-- [ ] Snapshot compaction: 100k-event workflow replays from snapshot in <10% of
-      full-replay time (measured, printed)
-- [ ] Non-determinism detection test (changed step order → typed error, no loop)
-- [ ] WAL corruption test (random byte flips → truncate + resume)
+- [x] crash-at-every-boundary test (SimDisk sweep over every disk op + real
+      subprocess kill -9 tests)
+- [x] Durable sleep survives restart (sim virtual time + real 2s sleep w/ SIGKILL)
+- [x] Signal wakes durably blocked workflow after restart (sim + real)
+- [x] Snapshot compaction: 100k-event workflow recovers from snapshot in 4.6%
+      of full-replay time (6.95ms vs 150.3ms, printed by the test)
+- [x] Non-determinism detection test (changed step name → typed error, no loop,
+      heals on rollback)
+- [x] WAL corruption test (byte flips → truncate at offset + resume + complete)
 - [ ] `cargo test --workspace`, `clippy -D warnings`, `fmt --check`,
       `cargo doc --no-deps` all green
-- [ ] `docs/architecture.md`, `docs/on-disk-format.md`, `docs/determinism-guide.md`
-- [ ] ADRs for all §0.8 decisions
+- [x] `docs/architecture.md`, `docs/on-disk-format.md`, `docs/determinism-guide.md`
+- [x] ADRs for all §0.8 decisions (0001–0007)
 
 ## Phase 2 — Benchmarking & profiling
 

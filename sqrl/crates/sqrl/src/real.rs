@@ -7,10 +7,11 @@
 //! Tokio multi-thread runtime (the *step pool*), and their results come back
 //! as engine commands. The orchestration path itself never touches Tokio.
 //!
-//! With the `work-stealing` cargo feature the step pool is shared and sized
-//! to all cores; without it each dispatch still lands on the shared pool but
-//! the pool is sized per configuration. (Orchestration is thread-per-core in
-//! both modes; the feature exists for Phase-2 skew benchmarking.)
+//! With the `work-stealing` cargo feature, *new* workflows are placed on the
+//! least-loaded core instead of by hash (for skewed id distributions, ADR
+//! 0001); orchestration remains thread-per-core in both modes and the
+//! placement map is rebuilt from the shards at startup so recovery routing
+//! stays correct.
 
 use sqrl_core::engine::{EngineCmd, EngineCore, Scheduler};
 use sqrl_core::{Clock, EngineConfig, Entropy, LogicalTime, Registry, Storage, StorageError};
@@ -95,6 +96,10 @@ pub struct RealScheduler {
     cores: Vec<CoreHandle>,
     joins: Vec<JoinHandle<()>>,
     step_rt: Option<tokio::runtime::Runtime>,
+    #[cfg(feature = "work-stealing")]
+    placement: std::sync::Mutex<std::collections::HashMap<sqrl_core::WorkflowId, usize>>,
+    #[cfg(feature = "work-stealing")]
+    loads: Vec<AtomicU64>,
 }
 
 impl RealScheduler {
@@ -170,15 +175,66 @@ impl RealScheduler {
             });
             joins.push(join);
         }
-        Ok(RealScheduler {
+        let sched = RealScheduler {
+            #[cfg(feature = "work-stealing")]
+            placement: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(feature = "work-stealing")]
+            loads: (0..cores.len()).map(|_| AtomicU64::new(0)).collect(),
             cores,
             joins,
             step_rt: Some(step_rt),
-        })
+        };
+        #[cfg(feature = "work-stealing")]
+        {
+            // Recovered workflows live wherever their storage shard is; the
+            // routing map must know that before any command is accepted.
+            use sqrl_core::sync::promise;
+            let mut map = sched.placement.lock().expect("placement lock");
+            for (shard, core) in sched.cores.iter().enumerate() {
+                let (c, w) = promise::<Vec<sqrl_core::engine::StatusEntry>>();
+                core.send(EngineCmd::Status { reply: c });
+                for entry in w.wait_blocking() {
+                    map.insert(entry.id, shard);
+                    sched.loads[shard].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        Ok(sched)
     }
 
     /// Route a command to its shard.
+    ///
+    /// Default: static placement by `hash(workflow_id) % shards`
+    /// (shared-nothing thread-per-core, ADR 0001). With the `work-stealing`
+    /// feature, *new* workflows are placed on the least-loaded shard instead
+    /// (dynamic placement for skewed id distributions); subsequent commands
+    /// follow the recorded placement, which is rebuilt from the shards at
+    /// startup.
     pub fn submit_cmd(&self, cmd: EngineCmd) {
+        #[cfg(feature = "work-stealing")]
+        {
+            if let Some(id) = cmd.workflow() {
+                let shard = match &cmd {
+                    EngineCmd::Start { .. } => {
+                        let mut map = self.placement.lock().expect("placement lock");
+                        let shard = (0..self.cores.len())
+                            .min_by_key(|i| self.loads[*i].load(Ordering::Relaxed))
+                            .unwrap_or(0);
+                        map.insert(id.clone(), shard);
+                        self.loads[shard].fetch_add(1, Ordering::Relaxed);
+                        shard
+                    }
+                    _ => {
+                        let map = self.placement.lock().expect("placement lock");
+                        map.get(id)
+                            .copied()
+                            .unwrap_or_else(|| id.shard(self.cores.len()))
+                    }
+                };
+                self.cores[shard].send(cmd);
+                return;
+            }
+        }
         let shard = cmd
             .workflow()
             .map(|id| id.shard(self.cores.len()))

@@ -27,7 +27,7 @@ use crate::inject::{Clock, Entropy};
 use crate::instance::{BoxStepFut, InstanceInner, Resolution, StepClosure, StepReg, Waiting};
 use crate::registry::{Registry, WorkflowFut};
 use crate::snapshot::{
-    InflightStep, Outcome, SnapshotRecord, SnapshotState, StartInfo, TerminalStatus,
+    InflightStep, Outcome, SnapshotBody, SnapshotMeta, SnapshotRecord, StartInfo, TerminalStatus,
 };
 use crate::state::{FailureKind, StateKind, WorkflowState};
 use crate::storage::{AppendEntry, AppendPayload, JournalReadout, StorageShard, StorageStats};
@@ -100,6 +100,11 @@ pub enum EngineCmd {
         /// Reply channel.
         reply: Completer<Vec<StatusEntry>>,
     },
+    /// Report engine + storage counters for this shard.
+    Metrics {
+        /// Reply channel.
+        reply: Completer<(EngineMetrics, StorageStats)>,
+    },
     /// No-op; forces a tick.
     Tick,
     /// Flush, sync, and stop accepting work.
@@ -115,7 +120,10 @@ impl EngineCmd {
             | EngineCmd::Cancel { id, .. }
             | EngineCmd::Watch { id, .. }
             | EngineCmd::StepFinished { id, .. } => Some(id),
-            EngineCmd::Status { .. } | EngineCmd::Tick | EngineCmd::Shutdown => None,
+            EngineCmd::Status { .. }
+            | EngineCmd::Metrics { .. }
+            | EngineCmd::Tick
+            | EngineCmd::Shutdown => None,
         }
     }
 }
@@ -141,7 +149,9 @@ pub struct StatusEntry {
     pub state: StateKind,
     /// Failure description if failed.
     pub failure: Option<String>,
-    /// Journal records so far (0 when passivated/terminal — not loaded).
+    /// Journal records so far. **0 for passivated or terminal workflows** —
+    /// their journals are not held in memory; use `sqrl inspect` (CLI) for
+    /// persisted counts.
     pub records: u64,
     /// Whether the instance is passivated.
     pub passivated: bool,
@@ -257,6 +267,7 @@ struct Instance {
 
 struct PassiveInfo {
     name: String,
+    state_hint: StateKind,
     watchers: Vec<Completer<TerminalResult>>,
 }
 
@@ -405,7 +416,7 @@ impl EngineCore {
             .map(|(id, slot)| {
                 let k = match slot {
                     Slot::Active(inst) => inst.state.kind(),
-                    Slot::Passive(_) => StateKind::Blocked,
+                    Slot::Passive(p) => p.state_hint,
                     Slot::Terminal(t) => t.state,
                 };
                 (id.clone(), k)
@@ -438,6 +449,13 @@ impl EngineCore {
             }
         }
         self.sweep_passivation(now);
+        if self.shutdown && self.storage_failed.is_none() {
+            // Final housekeeping so a clean shutdown leaves the smallest
+            // possible store (quiescence snapshots make old segments dead).
+            if let Err(e) = self.storage.maintain() {
+                tracing::warn!(error = %e, "shutdown maintenance failed");
+            }
+        }
         TickOutput {
             dispatches: std::mem::take(&mut self.dispatches),
             next_wake: self.next_wake(now),
@@ -539,7 +557,7 @@ impl EngineCore {
                         Slot::Passive(p) => StatusEntry {
                             id: id.clone(),
                             name: p.name.clone(),
-                            state: StateKind::Blocked,
+                            state: p.state_hint,
                             failure: None,
                             records: 0,
                             passivated: true,
@@ -556,9 +574,13 @@ impl EngineCore {
                     .collect();
                 reply.complete(entries);
             }
+            EngineCmd::Metrics { reply } => {
+                reply.complete((self.metrics, self.storage.stats()));
+            }
             EngineCmd::Tick => {}
             EngineCmd::Shutdown => {
                 self.shutdown = true;
+                self.snapshot_quiescent(now);
                 self.force_sync = true;
             }
         }
@@ -659,6 +681,7 @@ impl EngineCore {
         self.instances.insert(id.clone(), Slot::Active(inst));
         self.active_count += 1;
         self.metrics.starts += 1;
+        tracing::info!(workflow = %id, shard = self.shard, "workflow started");
         self.queue_runnable(&id);
         admit.complete(Ok(()));
     }
@@ -968,7 +991,12 @@ impl EngineCore {
         self.queue_runnable(wf);
     }
 
-    fn fire_retry(&mut self, wf: &WorkflowId, seq: u64, _now: LogicalTime) {
+    fn fire_retry(&mut self, wf: &WorkflowId, seq: u64, now: LogicalTime) {
+        if matches!(self.instances.get(wf), Some(Slot::Passive(_)))
+            && self.reactivate(wf, now).is_err()
+        {
+            return;
+        }
         let Some(Slot::Active(mut inst)) = self.instances.remove(wf) else {
             return;
         };
@@ -1001,6 +1029,8 @@ impl EngineCore {
         let Some(Slot::Active(mut inst)) = self.instances.remove(id) else {
             return;
         };
+        let span = tracing::debug_span!("activation", workflow = %id, shard = self.shard, state = ?inst.state.kind());
+        let _guard = span.enter();
         if inst.state.is_terminal() || inst.fut.is_none() {
             self.instances.insert(id.clone(), Slot::Active(inst));
             return;
@@ -1277,6 +1307,7 @@ impl EngineCore {
         };
         meta.dispatched_attempt = Some(attempt);
         self.metrics.step_dispatches += 1;
+        tracing::debug!(workflow = %id, seq, attempt, step = %meta.name, "step dispatched");
         self.dispatches.push(StepDispatch {
             workflow: id.clone(),
             seq,
@@ -1353,6 +1384,7 @@ impl EngineCore {
             result: Ok(output),
         });
         self.metrics.completions += 1;
+        tracing::info!(workflow = %id, shard = self.shard, "workflow completed");
     }
 
     /// Journaled terminal failure (workflow error / orchestration panic).
@@ -1366,6 +1398,7 @@ impl EngineCore {
             result: Err(err),
         });
         self.metrics.failures += 1;
+        tracing::warn!(workflow = %id, shard = self.shard, state = ?inst.state.kind(), "workflow failed");
     }
 
     /// In-memory-only failure (non-determinism): nothing journaled, so a
@@ -1436,6 +1469,41 @@ impl EngineCore {
         self.take_snapshot(id, inst, None);
     }
 
+    /// Snapshot every live workflow that is at a quiescent suspension point
+    /// (clean shutdown): their next recovery becomes lazy — O(metadata).
+    fn snapshot_quiescent(&mut self, _now: LogicalTime) {
+        if self.config.snapshot_every == u64::MAX {
+            return; // snapshots disabled
+        }
+        let ids: Vec<WorkflowId> = self
+            .instances
+            .iter()
+            .filter_map(|(id, slot)| match slot {
+                Slot::Active(inst)
+                    if !inst.state.is_terminal()
+                        && inst.fut.is_some()
+                        && inst.reveals.is_empty()
+                        && inst.records_since_snapshot > 0
+                        && matches!(
+                            inst.state.kind(),
+                            StateKind::Sleeping | StateKind::Blocked | StateKind::AwaitingStep
+                        ) =>
+                {
+                    Some(id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for id in ids {
+            if let Some(Slot::Active(mut inst)) = self.instances.remove(&id) {
+                if !self.history_incomplete(&inst) {
+                    self.take_snapshot(&id, &mut inst, None);
+                }
+                self.instances.insert(id, Slot::Active(inst));
+            }
+        }
+    }
+
     fn take_snapshot(
         &mut self,
         id: &WorkflowId,
@@ -1457,19 +1525,26 @@ impl EngineCore {
                 )
             })
             .collect();
-        let state = SnapshotState {
+        let meta = SnapshotMeta {
             start: Some(inst.start.clone()),
-            cmds: cell.cmds.clone(),
-            outcomes: inst.outcome_log.clone(),
             inflight_steps,
             pending_timers: inst.pending_timers.clone(),
             terminal,
             wf_time: cell.wf_time,
         };
+        let body = SnapshotBody {
+            cmds: cell.cmds.clone(),
+            outcomes: inst.outcome_log.clone(),
+        };
         drop(cell);
-        let snap = SnapshotRecord {
-            upto: inst.record_index,
-            state,
+        let snap = match SnapshotRecord::build(inst.record_index, meta, &body) {
+            Ok(s) => s,
+            Err(e) => {
+                // A snapshot is an optimization; losing one must never lose
+                // data. Log and continue with the plain journal.
+                tracing::error!(workflow = %id, error = %e, "snapshot encoding failed; skipping");
+                return;
+            }
         };
         self.append_buf.push(AppendEntry {
             workflow: id.clone(),
@@ -1492,12 +1567,13 @@ impl EngineCore {
         }
         let snap = SnapshotRecord {
             upto: inst.record_index,
-            state: SnapshotState {
+            meta: SnapshotMeta {
                 start: Some(inst.start.clone()),
                 terminal: Some(terminal),
                 wf_time: inst.cell.borrow().wf_time,
-                ..SnapshotState::default()
+                ..SnapshotMeta::default()
             },
+            body: Vec::new(),
         };
         self.append_buf.push(AppendEntry {
             workflow: id.clone(),
@@ -1605,6 +1681,13 @@ impl EngineCore {
             return;
         }
         self.last_sweep = now;
+        // Opportunistic storage maintenance (segment roll bookkeeping + GC of
+        // segments fully superseded by durable snapshots).
+        if self.storage_failed.is_none() {
+            if let Err(e) = self.storage.maintain() {
+                tracing::warn!(error = %e, "storage maintenance failed");
+            }
+        }
         // Convert acked terminals to compact slots.
         let terminal_ids: Vec<WorkflowId> = self
             .instances
@@ -1672,10 +1755,17 @@ impl EngineCore {
             if let Some(Slot::Active(inst)) = self.instances.remove(&id) {
                 self.active_count = self.active_count.saturating_sub(1);
                 self.metrics.passivations += 1;
+                let hint = inst.state.kind();
+                let mut inst = inst;
+                if self.config.snapshot_every != u64::MAX && inst.records_since_snapshot > 0 {
+                    // Quiescence snapshot: makes the next reload O(metadata).
+                    self.take_snapshot(&id, &mut inst, None);
+                }
                 self.instances.insert(
                     id,
                     Slot::Passive(PassiveInfo {
                         name: inst.start.name.clone(),
+                        state_hint: hint,
                         watchers: inst.watchers,
                     }),
                 );
@@ -1695,7 +1785,7 @@ impl EngineCore {
             }
         };
         self.metrics.reactivations += 1;
-        self.install_loaded(id.clone(), readout, now);
+        self.install_loaded_inner(id.clone(), readout, now, true);
         if let Some(Slot::Active(inst)) = self.instances.get_mut(id) {
             inst.watchers.extend(p.watchers);
         } else if let Some(Slot::Terminal(t)) = self.instances.get_mut(id) {
@@ -1706,14 +1796,94 @@ impl EngineCore {
         Ok(())
     }
 
-    /// Build a slot from persisted state and queue recovery replay if the
-    /// workflow is live.
+    /// Build a slot from persisted state. Live workflows with nothing
+    /// actively in flight recover **lazily**: timers are re-armed straight
+    /// from snapshot metadata + journal tail, and the workflow stays
+    /// passivated until something actually happens to it — recovery cost is
+    /// O(metadata), not O(history). Workflows with a bare in-flight step
+    /// must materialize now (the step closure only exists in re-run code).
     fn install_loaded(&mut self, id: WorkflowId, readout: JournalReadout, now: LogicalTime) {
+        self.install_loaded_inner(id, readout, now, false)
+    }
+
+    fn install_loaded_inner(
+        &mut self,
+        id: WorkflowId,
+        readout: JournalReadout,
+        now: LogicalTime,
+        force_materialize: bool,
+    ) {
+        if !force_materialize {
+            match summarize(&readout) {
+                Summary::Terminal { name, status } => {
+                    let (state, failure, result) = terminal_parts(status);
+                    self.instances.insert(
+                        id,
+                        Slot::Terminal(TerminalInfo {
+                            name,
+                            state,
+                            failure,
+                            result,
+                        }),
+                    );
+                    return;
+                }
+                Summary::Lazy {
+                    name,
+                    pending_timers,
+                    retries,
+                    state_hint,
+                } => {
+                    for (seq, at) in pending_timers {
+                        self.arm_engine_timer(
+                            at,
+                            TimerEntry::WorkflowTimer {
+                                wf: id.clone(),
+                                seq,
+                            },
+                        );
+                    }
+                    for (seq, at) in retries {
+                        self.arm_engine_timer(
+                            at,
+                            TimerEntry::RetryStep {
+                                wf: id.clone(),
+                                seq,
+                            },
+                        );
+                    }
+                    self.instances.insert(
+                        id,
+                        Slot::Passive(PassiveInfo {
+                            name,
+                            state_hint,
+                            watchers: Vec::new(),
+                        }),
+                    );
+                    return;
+                }
+                Summary::Corrupt(msg) => {
+                    tracing::error!(workflow = %id, msg, "unloadable workflow journal");
+                    self.instances.insert(
+                        id,
+                        Slot::Terminal(TerminalInfo {
+                            name: String::new(),
+                            state: StateKind::Failed,
+                            failure: Some(msg.clone()),
+                            result: Err(Error::App(msg)),
+                        }),
+                    );
+                    return;
+                }
+                Summary::NeedsCode => {}
+            }
+        }
         match load_instance(&self.registry, &self.config, readout, &id, now) {
             Loaded::Terminal(info) => {
                 self.instances.insert(id, Slot::Terminal(info));
             }
             Loaded::Active(mut inst) => {
+                tracing::debug!(workflow = %id, shard = self.shard, "materializing workflow (replay)");
                 // Arm pending retries recorded in history.
                 let retries: Vec<(u64, LogicalTime)> = inst
                     .steps
@@ -1783,21 +1953,25 @@ fn load_instance(
     let mut records_since_snapshot: u64 = 0;
 
     if let Some(snap) = readout.snapshot {
-        let st = snap.state;
+        let meta = snap.meta.clone();
         record_index = snap.upto;
-        start = st.start.clone();
-        if let Some(t) = st.terminal {
-            terminal = Some((t, st.wf_time));
+        start = meta.start.clone();
+        if let Some(t) = meta.terminal {
+            terminal = Some((t, meta.wf_time));
         }
-        cmds = st.cmds;
+        let body = match snap.decode_body() {
+            Ok(b) => b,
+            Err(e) => return Loaded::Corrupt(format!("snapshot body undecodable: {e}")),
+        };
+        cmds = body.cmds;
         // Note: pending timers are NOT pre-armed here. Arming happens when
         // replayed code re-issues the sleep (register_timer); pre-filling
         // `pending_timers` would make registration believe the wheel entry
         // already exists in this process.
-        for (seq, at) in &st.pending_timers {
+        for (seq, at) in &meta.pending_timers {
             timer_targets.insert(*seq, *at);
         }
-        for (seq, inflight) in st.inflight_steps {
+        for (seq, inflight) in meta.inflight_steps {
             steps.insert(
                 seq,
                 StepRuntime {
@@ -1808,7 +1982,7 @@ fn load_instance(
                 },
             );
         }
-        for outcome in st.outcomes {
+        for outcome in body.outcomes {
             let reveal = match outcome {
                 Outcome::StepOk { seq, result, at } => Reveal::StepOk {
                     seq,
@@ -2026,6 +2200,102 @@ fn load_instance(
         terminal_value: None,
         terminal_acked: false,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Recovery summaries: what a journal says without running any code
+// ---------------------------------------------------------------------------
+
+enum Summary {
+    /// The workflow is terminal.
+    Terminal {
+        name: String,
+        status: TerminalStatus,
+    },
+    /// Nothing actively in flight: recover lazily (arm these timers, park
+    /// as Passive).
+    Lazy {
+        name: String,
+        pending_timers: Vec<(u64, LogicalTime)>,
+        retries: Vec<(u64, LogicalTime)>,
+        state_hint: StateKind,
+    },
+    /// A bare in-flight step exists — only re-run code can re-create its
+    /// closure; materialize now.
+    NeedsCode,
+    /// The journal is unusable.
+    Corrupt(String),
+}
+
+fn terminal_parts(status: TerminalStatus) -> (StateKind, Option<String>, TerminalResult) {
+    match status {
+        TerminalStatus::Completed { output } => (StateKind::Completed, None, Ok(output)),
+        TerminalStatus::Failed { failure } => {
+            let e = failure.to_error();
+            (StateKind::Failed, Some(e.to_string()), Err(e))
+        }
+        TerminalStatus::Cancelled => (StateKind::Cancelled, None, Err(Error::Cancelled)),
+    }
+}
+
+/// Decide whether persisted state allows **lazy** recovery.
+///
+/// Lazy recovery is sound only when the snapshot provably captured the
+/// workflow at a quiescent suspension point and nothing happened after it —
+/// i.e. the snapshot is the *last* record. The engine writes exactly such
+/// snapshots at clean shutdown and at passivation. Any journal tail after
+/// the snapshot (a crash happened) forces eager materialization: a torn
+/// tail can hide runnable work that only re-running the code rediscovers.
+fn summarize(readout: &JournalReadout) -> Summary {
+    let Some(snap) = &readout.snapshot else {
+        return Summary::NeedsCode;
+    };
+    if !readout.records.is_empty() {
+        return Summary::NeedsCode;
+    }
+    let Some(start) = &snap.meta.start else {
+        return Summary::Corrupt("snapshot has no start info".to_string());
+    };
+    let name = start.name.clone();
+    if let Some(status) = &snap.meta.terminal {
+        return Summary::Terminal {
+            name,
+            status: status.clone(),
+        };
+    }
+    // A bare in-flight step (no scheduled retry) needs its closure, which
+    // only re-run code can provide.
+    if snap
+        .meta
+        .inflight_steps
+        .values()
+        .any(|s| s.retry_at.is_none())
+    {
+        return Summary::NeedsCode;
+    }
+    let retries: Vec<(u64, LogicalTime)> = snap
+        .meta
+        .inflight_steps
+        .iter()
+        .filter_map(|(seq, s)| s.retry_at.map(|at| (*seq, at)))
+        .collect();
+    let pending_timers: Vec<(u64, LogicalTime)> = snap
+        .meta
+        .pending_timers
+        .iter()
+        .map(|(s, at)| (*s, *at))
+        .collect();
+    let state_hint = if pending_timers.is_empty() && retries.is_empty() {
+        StateKind::Blocked
+    } else {
+        StateKind::Sleeping
+    };
+    Summary::Lazy {
+        name,
+        pending_timers,
+        retries,
+        state_hint,
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -63,6 +63,19 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  acceptance:
+    name: acceptance + DST (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sqrl
+      - name: Release-gated acceptance, DST, and property tests
+        run: |
+          cargo test -p sqrl-tests --release -- --include-ignored --skip dst_long --nocapture
+
   coverage:
     name: coverage (sqrl-core + sqrl-store)
     runs-on: ubuntu-latest

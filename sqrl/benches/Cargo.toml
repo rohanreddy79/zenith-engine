@@ -13,3 +13,7 @@ sqrl-store.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
+
+[[bench]]
+name = "micro"
+harness = false

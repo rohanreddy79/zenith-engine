@@ -308,7 +308,8 @@ mod tests {
             workflow: WorkflowId::new("wf"),
             snapshot: SnapshotRecord {
                 upto: 5,
-                state: Default::default(),
+                meta: Default::default(),
+                body: Vec::new(),
             },
         });
         let hdr = WalRecord::SegmentHeader(SegmentHeader {

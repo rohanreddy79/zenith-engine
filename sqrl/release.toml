@@ -1,0 +1,11 @@
+# cargo-release configuration (workspace).
+# Usage: cargo release --workspace <level> (see CONTRIBUTING.md for policy)
+allow-branch = ["main"]
+shared-version = true
+consolidate-commits = true
+pre-release-commit-message = "chore(release): v{{version}}"
+tag-name = "v{{version}}"
+tag-message = "sqrl v{{version}}"
+publish = true
+verify = true
+# Examples, benches, harness and the tests crate never publish.

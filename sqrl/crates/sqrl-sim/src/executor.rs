@@ -138,6 +138,13 @@ impl SimExecutor {
     /// Perform one scheduling step: poll one ready task, or advance time to
     /// the next timer. Returns false when fully idle.
     pub fn step(&self) -> bool {
+        self.step_bounded(None)
+    }
+
+    /// Like [`SimExecutor::step`], but never advances virtual time beyond
+    /// `limit`: if the only remaining work is timers past the limit, returns
+    /// false without advancing.
+    pub fn step_bounded(&self, limit: Option<LogicalTime>) -> bool {
         // Phase 1: pick work while holding the lock.
         let (id, mut fut) = {
             let mut inner = self.lock();
@@ -148,6 +155,11 @@ impl SimExecutor {
                 let Some((&(fire_at, _), _)) = inner.timers.iter().next() else {
                     return false;
                 };
+                if let Some(limit) = limit {
+                    if fire_at > limit.as_millis() {
+                        return false;
+                    }
+                }
                 self.clock.advance_to(LogicalTime::from_millis(fire_at));
                 let now = fire_at;
                 let due: Vec<(u64, u64)> = inner

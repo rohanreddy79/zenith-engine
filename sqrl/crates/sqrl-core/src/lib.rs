@@ -47,7 +47,7 @@ pub use registry::{
     typed_def, Registry, WorkflowDef, WorkflowDefProvider, WorkflowFactory, WorkflowFut,
 };
 pub use retry::RetryPolicy;
-pub use snapshot::{SnapshotRecord, SnapshotState};
+pub use snapshot::{SnapshotBody, SnapshotMeta, SnapshotRecord};
 pub use state::{FailureKind, StateKind, WorkflowState};
 pub use storage::{AppendEntry, AppendPayload, JournalReadout, Storage, StorageShard};
 pub use time::LogicalTime;

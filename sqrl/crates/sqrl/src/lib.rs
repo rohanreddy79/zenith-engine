@@ -322,6 +322,35 @@ impl Sqrl {
         all
     }
 
+    /// Engine + storage counters per shard (fsyncs, records, bytes written,
+    /// completions, retries, ...). Blocking; cheap.
+    pub fn stats_blocking(
+        &self,
+    ) -> Vec<(sqrl_core::EngineMetrics, sqrl_core::storage::StorageStats)> {
+        let mut waiters = Vec::new();
+        self.sched.broadcast(|| {
+            let (c, w) = promise();
+            waiters.push(w);
+            EngineCmd::Metrics { reply: c }
+        });
+        waiters.into_iter().map(|w| w.wait_blocking()).collect()
+    }
+
+    /// Blocking variant of [`Sqrl::status`] for non-async callers.
+    pub fn status_blocking(&self) -> Vec<StatusEntry> {
+        let mut waiters = Vec::new();
+        self.sched.broadcast(|| {
+            let (c, w) = promise::<Vec<StatusEntry>>();
+            waiters.push(w);
+            EngineCmd::Status { reply: c }
+        });
+        let mut all = Vec::new();
+        for w in waiters {
+            all.extend(w.wait_blocking());
+        }
+        all
+    }
+
     /// Number of shards (engine cores).
     pub fn num_shards(&self) -> usize {
         self.sched.num_shards()
