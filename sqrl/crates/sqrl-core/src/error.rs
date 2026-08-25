@@ -164,6 +164,9 @@ pub enum Rejected {
     /// The engine is shutting down or storage has failed permanently.
     #[error("engine unavailable: {0}")]
     Unavailable(String),
+    /// The request itself is invalid (e.g. oversized input payload).
+    #[error("invalid request: {0}")]
+    Invalid(String),
 }
 
 /// An illegal lifecycle state transition was attempted.
