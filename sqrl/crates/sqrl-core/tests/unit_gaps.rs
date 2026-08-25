@@ -337,10 +337,7 @@ fn promise_future_pending_then_woken() {
     let mut cx = Context::from_waker(waker);
     assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
     c.complete(5);
-    assert!(matches!(
-        Pin::new(&mut fut).poll(&mut cx),
-        Poll::Ready(5)
-    ));
+    assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(5)));
 }
 
 #[test]
