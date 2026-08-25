@@ -1,10 +1,44 @@
-# sqrl
+# 🐿️ sqrl
 
 **Embedded, deterministic-first durable execution for Rust.** Think "the
 SQLite of durable execution": `cargo add sqrl`, write workflows as async
 functions, and if your process is `kill -9`'d at any point, every workflow
 resumes from its last completed step on restart. No server. No Postgres. No
 cluster. One directory of checksummed files.
+
+## See it survive
+
+<!-- Once recorded (see docs/marketing/), replace this block with:
+     ![sqrl survives kill -9](docs/assets/demo.gif) -->
+
+One command, one murder, one recovery — real output from
+`cargo run --release -p crash_me`, which SIGKILLs its own worker
+mid-workflow and restarts it:
+
+```text
+=== sqrl crash_me: kill -9 recovery demo ===
+
+[parent] run 1: spawning worker; killing it with SIGKILL in ~600 ms
+[worker] fresh start: workflow `crash-demo` begins
+[worker] executing step 1
+[worker] executing step 2
+[worker] executing step 3
+[parent] killed worker mid-workflow (signal: 9 (SIGKILL))
+
+[parent] run 2: respawning worker; it should RESUME, not restart
+[worker] found an existing WAL: recovering `crash-demo`
+[worker] executing step 3    <- was in flight at the kill: runs again (at-least-once)
+[worker] executing step 4
+[worker] executing step 5
+[worker] workflow finished: 5/5 steps completed
+
+=== SUCCESS: workflow survived kill -9 and resumed from its last completed step ===
+```
+
+Steps 1–2 did **not** re-execute — their results replayed from the journal.
+Step 3 was in flight when the kill landed, so it ran a second time: sqrl is
+honestly at-least-once, and `ctx.idempotency_key()` is how you make side
+effects safe to repeat. Try it yourself; it takes ten seconds.
 
 ```rust
 use sqrl::{Ctx, Result, Sqrl, WalStorage};
