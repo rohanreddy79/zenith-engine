@@ -6,8 +6,19 @@
 
 ## UNVERIFIED items
 
-_(populated as encountered; each entry links to the doc section with exact
-reproduction instructions for a human)_
+1. **Comparison benchmarks (DBOS / Temporal / Restate)** — the sandbox has
+   no npm registry access or docker. Exact scripts:
+   `bench-harness/comparisons/*.sh`; see docs/benchmarks.md §Comparison.
+2. **macOS CI legs** — CI matrix includes macOS, but this environment is
+   Linux-only; the jobs run on GitHub Actions.
+3. **MSRV (1.85) build** — declared in Cargo.toml and checked by the CI
+   matrix (`rust: "1.85"`); not verified locally (only 1.94.1 installed).
+   Verify: `rustup toolchain install 1.85 && cargo +1.85 build --workspace`.
+4. **PostgreSQL storage backend** — no Postgres/docker available;
+   `sqrl-store-postgres` is an explicit stub crate documenting this (see
+   crate docs); the SQLite backend is the tested second backend.
+5. **CI itself** — workflow files are written but this repository's Actions
+   runs happen on push; not observable from the sandbox.
 
 ---
 
@@ -108,15 +119,18 @@ Ordering constraint honored: **simulator before executor**.
 
 ## Phase 2 — Benchmarking & profiling
 
-- [ ] Criterion benches: step-commit latency (p50/p99/p999) per FsyncPolicy; WAL
-      append throughput; replay throughput; snapshot write/restore; memory per
-      passivated workflow
-- [ ] bench-harness workloads: W1 start-locally, W2 saga fan-out, W3 long-runner
-      (1M steps), W4 recovery, W5 skew (thread-per-core vs work-stealing)
-- [ ] `work-stealing` cargo feature + skew comparison
-- [ ] Comparison targets: DBOS Transact (SQLite mode), Temporal dev server,
-      Restate single-node — run what's installable, otherwise UNVERIFIED + exact
-      scripts
+- [x] Criterion benches written (`benches/benches/micro.rs`: codec, append±fsync,
+      replay read, snapshot build/decode); latency percentiles + memory-per-
+      passivated-workflow live in bench-harness (`latency`, `mem`) — numbers
+      recorded in docs/benchmarks.md as runs complete
+- [x] bench-harness workloads implemented: W1 start-locally, W2 saga fan-out
+      (signal-based, deadlock-free), W3 long-runner, W4 kill -9 recovery,
+      W5 skew, + latency, + mem
+- [x] `work-stealing` cargo feature (least-loaded placement, startup-rebuilt
+      routing map); skew comparison recorded with W5 results
+- [x] Comparison scripts written (`bench-harness/comparisons/`): DBOS SQLite,
+      Temporal dev, Restate — UNVERIFIED here (no npm/docker in sandbox);
+      exact scripts provided, see docs/benchmarks.md
 - [ ] Profiling round: flamegraph, allocation profile, fsync counts; findings +
       driven optimizations in `docs/benchmarks.md`
 - [ ] Metrics per run: workflows/s, steps/s, p50/p99/p999, RSS, CPU, write
@@ -124,7 +138,8 @@ Ordering constraint honored: **simulator before executor**.
 - [ ] `docs/benchmarks.md` with hardware/OS/kernel/disk/commit + exact commands
 - [ ] ≥1 optimization round with before/after numbers
 - [ ] Skew result recorded in thread-per-core ADR
-- [ ] Nightly benchmark CI job (artifacts, non-gating)
+- [x] Nightly benchmark CI job (`.github/workflows/sqrl-nightly.yml`,
+      artifacts, non-gating) + scheduled 5-min fuzz job
 
 ## Phase 3 — Robustness & ergonomics
 
@@ -133,19 +148,21 @@ Ordering constraint honored: **simulator before executor**.
       lost, no double completion, no illegal transition), liveness (terminates
       when faults stop); sometimes-assertions + coverage report; 30s CI version
       + long `--ignored` version; `docs/dst.md`
-- [ ] proptest: journal codec round-trip, replay idempotence, snapshot-equivalence
-- [ ] cargo-fuzz targets: WAL record decoder, manifest parser, replay engine
-      (10 min local each; 5 min scheduled CI job) — or UNVERIFIED if nightly
-      toolchain unavailable
+- [x] proptest: journal codec round-trip + single-byte-flip detection, replay
+      idempotence (incl. journal-untouched-by-replay), snapshot-equivalence
+- [x] cargo-fuzz targets: WAL record decoder, manifest parser, replay engine —
+      smoke-run clean (60s each: 6.0M/2.2M/56K execs, zero crashes); longer
+      runs + 5-min scheduled CI job configured
 - [ ] `sqrl-store-sqlite` (real, tested)
 - [ ] `sqrl-store-postgres` (tested if docker Postgres available, else UNVERIFIED)
-- [ ] Versioning & patching: `ctx.patched("id")`, workflow `version`,
-      `sqrl replay --against`, `docs/versioning-and-patching.md`
+- [x] Versioning & patching: `ctx.patched("id")`, workflow `version`,
+      `sqrl_core::engine::validate_history` + `sqrl::replay_check` (pre-deploy
+      CI check), CLI structural `replay`, `docs/versioning-and-patching.md`
 - [ ] CLI: `status`, `inspect`, `replay`, `fork`, `resume`, `cancel`, `signal`,
       `compact`, `bench` — all with integration tests
 - [ ] Observability: tracing spans; optional `opentelemetry` feature
 - [ ] Examples: `ai_agent_loop`, `long_running_counter`
-- [ ] README rewrite (10-line quickstart, guarantees, comparison link);
+- [x] README rewrite (quickstart, guarantees, comparison link);
       `docs/comparison.md` (honest, includes where sqrl loses)
 - [ ] Release engineering: cargo-release config, SemVer policy, on-disk format
       version policy, CHANGELOG, `cargo publish --dry-run` green, MSRV in CI
