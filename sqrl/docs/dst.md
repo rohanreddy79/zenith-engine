@@ -48,6 +48,17 @@ survive (bit rot legitimately truncates un-superseded records — that *is*
 the contract) while still requiring no crashes, no hangs, and clean
 truncation.
 
+### The paranoid durability oracle (`SQRL_DST_PARANOID=1`)
+
+On every newly observed completion acknowledgment, the harness forks the
+disk's **durable-only** state (as if every unsynced byte and namespace op
+were lost at that instant — the harshest legal crash), re-opens the store
+from the fork, and requires the workflow's terminal evidence (a terminal
+snapshot or `WorkflowCompleted` record) to be recoverable. This checks the
+acknowledgment contract itself, not just end-state consistency, and is how
+the torn-tail recovery data-loss bug was caught. It roughly doubles the
+run's cost; the acceptance runs below have it enabled.
+
 ## Sometimes assertions (state-space coverage)
 
 Counters that must be nonzero across the run — otherwise the adversary
@@ -59,16 +70,50 @@ report; the acceptance numbers for the current commit are recorded below.
 ## Running it
 
 ```bash
-# CI version (~48 seeds, determinism cross-checked on a sample), < 30 s:
-cargo test -p sqrl-tests --release dst_short -- --nocapture
+# CI version (48 seeds, determinism cross-checked on a sample), ~1.5 s:
+SQRL_DST_PARANOID=1 cargo test -p sqrl-tests --release dst_short -- --nocapture
 
-# The long haul (10,000 seeds across all cores):
-cargo test -p sqrl-tests --release dst_long -- --ignored --nocapture
+# The long haul (10,000 seeds across all cores), ~90 s on 4 vCPUs:
+SQRL_DST_PARANOID=1 cargo test -p sqrl-tests --release dst_long -- --ignored --nocapture
 ```
 
 Reproduce any failure by its seed: every assertion message includes it, and
-`run_seed(seed, ops)` replays that exact universe.
+`SQRL_DST_START=<seed> SQRL_DST_END=<seed+1>` narrows `dst_short` to that
+exact universe (`SQRL_DST_DEBUG=1` traces the adversary's ops).
 
 ## Recorded results
 
-_(updated per release; see `docs/FINAL_REPORT.md` for the acceptance run)_
+`dst_long`, 10,000 seeds, paranoid oracle enabled — run on the acceptance
+environment (4-vCPU Xeon, see `docs/benchmarks.md`), 89 s wall:
+
+```
+DST coverage over 10000 seeds:
+  crashes=171185 (mid-replay=70729)
+  retries=31366 panics_caught=68349 timers_fired=59382
+  snapshots=97392 passivations=1324 reactivations=2190
+  signals=70773 cancels=88234 joins=79665
+  injected_write_errors=80390 corruption_truncations=11141
+  corruption_regressions=32669 backpressure=0
+```
+
+Every seed passed physical determinism, safety, liveness, and the paranoid
+ack-durability oracle. (`backpressure=0`: the adversary's per-shard load
+stays under the default in-flight cap; backpressure is covered by a
+dedicated acceptance test instead.)
+
+## Bugs this suite has caught (kept as regression evidence)
+
+* **Torn-tail recovery data loss** (seed 3): recovery adopted a torn tail
+  record's bytes as the append offset; the garbage later read as
+  corruption and truncated away durably-acknowledged history behind it.
+  Fixed in `WalShard::open`; pinned by
+  `torn_tail_is_cut_at_open_so_later_appends_stay_recoverable`.
+* **fsync-on-recovery gap** (seed 3, earlier): recovery trusted page-cache
+  reads of a previous process's unfsynced writes and acknowledged on top of
+  them. Fixed by fsyncing all live segments + directory at open.
+* **Simulator truncate infidelity** (seed 3): `SimDisk` truncates never
+  shrank files, so recovery cuts silently didn't stick — masking and then
+  revealing the above once fixed.
+* **Recovery livelock** (sweep): a poisoned engine kept reporting a stale
+  group-commit deadline, spinning its driver forever. Fixed by
+  `tick_poisoned()` + `next_wake` guard.

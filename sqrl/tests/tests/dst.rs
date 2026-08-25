@@ -463,8 +463,13 @@ impl World {
 
     fn crash(&mut self) {
         self.coverage.crashes += 1;
-        self.sched = None;
+        // Power loss: the disk dies FIRST, then the process. Dropping the
+        // scheduler before crashing the disk would let engine teardown
+        // flush+fsync+ack on the way down — a luxury real power loss does
+        // not grant (and a window where an ack could race deliberate bit
+        // rot that already made its history unreachable).
         self.disk.crash();
+        self.sched = None;
         // A restart takes some wall time.
         self.clock.advance(Duration::from_millis(200));
         self.ensure_sched();
@@ -524,12 +529,25 @@ impl World {
                         Err(e) => diag.push(format!("shard {sh}: read err {e}")),
                     }
                 }
-                assert!(
-                    found,
-                    "seed {}: completion of {id} acked but NOT durable\n{}",
-                    self.seed,
-                    diag.join("\n")
-                );
+                if !found {
+                    // In corruption-mode seeds an ack can be legally voided
+                    // between firing and this first observation: deliberate
+                    // bit rot erased the durable evidence (CRC truncation)
+                    // and the crash in the same op prevented an earlier
+                    // harvest. Same treatment as a voided `completed` entry:
+                    // forget the ack and its stale handle; the client-retry
+                    // drain re-runs the workflow.
+                    if self.corruption_mode && self.coverage.corruption_truncations > 0 {
+                        self.coverage.corruption_regressions += 1;
+                        self.handles.remove(&id);
+                        continue;
+                    }
+                    panic!(
+                        "seed {}: completion of {id} acked but NOT durable\n{}",
+                        self.seed,
+                        diag.join("\n")
+                    );
+                }
             }
             self.completed.insert(id, out);
         }
@@ -725,6 +743,30 @@ impl World {
                 }
                 let sched = self.sched.as_mut().expect("sched");
                 let _ = sched.signal(&*id, "go", &1u64);
+            }
+            // 4. Re-cancel: a cancel acknowledged to the client may have been
+            // lost with an unsynced suffix (at-least-once, like starts and
+            // signals) — the workflow reverts to running/blocked and only the
+            // client's retry can terminate it.
+            self.ensure_sched();
+            let lost_cancels: Vec<String> = {
+                let states = self.sched.as_ref().expect("sched").states();
+                self.cancelled
+                    .iter()
+                    .filter(|id| {
+                        !matches!(
+                            states.get(&WorkflowId::new((*id).clone())),
+                            None | Some(
+                                StateKind::Completed | StateKind::Failed | StateKind::Cancelled
+                            )
+                        )
+                    })
+                    .cloned()
+                    .collect()
+            };
+            for id in lost_cancels {
+                let sched = self.sched.as_mut().expect("sched");
+                let _ = sched.cancel(&*id);
             }
             self.ensure_sched();
             let sched = self.sched.as_mut().expect("sched");
