@@ -344,3 +344,63 @@ fn same_seed_same_durable_image() {
     };
     assert_eq!(run(42), run(42));
 }
+
+#[test]
+fn torn_tail_is_cut_at_open_so_later_appends_stay_recoverable() {
+    // Regression: DST seed 3. A crash can leave a *torn* (partially kept)
+    // tail record. If recovery adopted the file end as the append offset,
+    // new records would land behind the garbage, and the NEXT recovery
+    // would read the garbage as corruption and truncate away durably
+    // acknowledged history behind it. Recovery must cut the torn tail off
+    // before accepting appends.
+    for seed in 0..50 {
+        let disk = SimDisk::new(seed);
+        {
+            let mut shard = open_shard(&disk, WalOptions::default());
+            shard
+                .append(&(0..10).map(|i| rec("wf-a", i)).collect::<Vec<_>>())
+                .unwrap();
+            shard.sync().unwrap();
+            // Unsynced tail: may vanish, survive, or tear on crash.
+            shard
+                .append(&(10..20).map(|i| rec("wf-a", i)).collect::<Vec<_>>())
+                .unwrap();
+        }
+        disk.crash();
+        disk.recover();
+        // Recovery #1 adopts whatever dense prefix survived, then appends
+        // and fsyncs more history on top of it.
+        let survived = {
+            let mut shard = open_shard(&disk, WalOptions::default());
+            let n = shard.read(&WorkflowId::new("wf-a")).unwrap().records.len() as u64;
+            shard
+                .append(&(n..n + 5).map(|i| rec("wf-a", i)).collect::<Vec<_>>())
+                .unwrap();
+            shard.sync().unwrap();
+            n
+        };
+        // A clean process restart: nothing synced may be lost.
+        {
+            let mut shard = open_shard(&disk, WalOptions::default());
+            let readout = shard.read(&WorkflowId::new("wf-a")).unwrap();
+            assert_eq!(
+                readout.records.len() as u64,
+                survived + 5,
+                "seed {seed}: synced appends after torn-tail recovery lost on reopen"
+            );
+            for (i, r) in readout.records.iter().enumerate() {
+                assert_eq!(r.index, i as u64, "seed {seed}: history must stay dense");
+            }
+        }
+        // And across another crash: still nothing synced may be lost.
+        disk.crash();
+        disk.recover();
+        let mut shard = open_shard(&disk, WalOptions::default());
+        let n = shard.read(&WorkflowId::new("wf-a")).unwrap().records.len() as u64;
+        assert_eq!(
+            n,
+            survived + 5,
+            "seed {seed}: synced appends after torn-tail recovery lost on crash"
+        );
+    }
+}

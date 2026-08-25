@@ -187,7 +187,8 @@ impl WalShard {
         let mut stats = StorageStats::default();
         let mut truncated_from: Option<u64> = None; // first bad segment
         let mut last_valid: Option<(u64, u64)> = None; // (seg, end offset)
-        for (pos, seg) in m.segments.clone().into_iter().enumerate() {
+        let seg_list = m.segments.clone();
+        for (pos, seg) in seg_list.iter().copied().enumerate() {
             if let Some(bad) = truncated_from {
                 // Everything after the first invalid record is suspect: the
                 // WAL is a single logical stream. Drop later segments.
@@ -245,10 +246,13 @@ impl WalShard {
                 }
                 valid_end = offset + record_total_len(&buf, offset);
             }
-            match end {
-                DecodeEnd::Eof => {
-                    last_valid = Some((seg, buf.len() as u64));
-                }
+            let cut = match end {
+                // A torn tail record (crash mid-append) is dead bytes and
+                // MUST be cut off now: if appends resumed after it, the
+                // garbage would sit mid-stream and the *next* recovery
+                // would read it as corruption and truncate away durably
+                // acknowledged history behind it.
+                DecodeEnd::Eof => buf.len() as u64 > valid_end,
                 DecodeEnd::Invalid { offset, reason } => {
                     tracing::warn!(
                         shard,
@@ -257,17 +261,52 @@ impl WalShard {
                         reason,
                         "WAL corruption: truncating segment at byte offset"
                     );
-                    // Truncate the file to the last valid record boundary.
-                    let mut f = vfs.open(&path, false).map_err(disk_err)?;
-                    f.truncate(valid_end).map_err(disk_err)?;
-                    f.sync().map_err(disk_err)?;
-                    last_valid = Some((seg, valid_end));
-                    if pos + 1 < scanned.len() {
-                        truncated_from = Some(seg);
-                    }
+                    true
+                }
+            };
+            if cut && valid_end > 0 {
+                // Truncate the file to the last valid record boundary.
+                tracing::warn!(shard, seg, valid_end, "truncating segment tail");
+                let mut f = vfs.open(&path, false).map_err(disk_err)?;
+                f.truncate(valid_end).map_err(disk_err)?;
+                f.sync().map_err(disk_err)?;
+                stats.fsyncs += 1;
+            }
+            if valid_end == 0 {
+                // Not even a valid segment header survived (torn create,
+                // header mismatch, or corruption at byte 0): the segment is
+                // dead — delete it rather than adopting a headerless tail.
+                tracing::warn!(shard, seg, "segment has no valid header; deleting");
+                let _ = vfs.delete(&join(&dir, &seg_name(seg)));
+                m.segments.retain(|s| *s != seg);
+                if pos + 1 < seg_list.len() {
+                    truncated_from = Some(seg);
+                }
+            } else {
+                last_valid = Some((seg, valid_end));
+                if cut && pos + 1 < seg_list.len() {
+                    // A cut inside a *sealed* (non-tail) segment breaks the
+                    // logical stream like corruption does.
+                    truncated_from = Some(seg);
                 }
             }
         }
+
+        // Recovery hardening: everything the index now references was read
+        // through the page cache and may include a previous process's
+        // un-fsynced writes (visible to us, not durable). Acknowledgments
+        // will be issued on top of this history, so make ALL of it durable
+        // before accepting a single new append — fsync every live segment
+        // and the directory. (The moral equivalent of fsync-on-recovery in
+        // SQLite/PostgreSQL; found by DST seed 3.)
+        for seg in &m.segments {
+            let mut f = vfs
+                .open(&join(&dir, &seg_name(*seg)), false)
+                .map_err(disk_err)?;
+            f.sync().map_err(disk_err)?;
+            stats.fsyncs += 1;
+        }
+        vfs.sync_dir(&dir).map_err(disk_err)?;
 
         // Open (or create) the tail segment for appending.
         let (current_seg, current_file, current_offset) = match last_valid {
