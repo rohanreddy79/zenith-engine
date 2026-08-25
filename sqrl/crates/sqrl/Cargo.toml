@@ -17,6 +17,8 @@ default = []
 # static hash placement (benchmarked in Phase 2 for skewed id distributions).
 # Orchestration remains thread-per-core; steps always run on the shared pool.
 work-stealing = []
+# NOTE: this feature's transitive dependencies (tonic/icu) require rustc
+# 1.88, above the workspace MSRV of 1.85 which covers every other build.
 # OpenTelemetry export: `sqrl::otel::init(...)` installs an OTLP trace
 # pipeline for sqrl's tracing spans, and `sqrl::otel::register_metrics`
 # exports engine/storage counters (throughput, fsyncs, backpressure, ...)

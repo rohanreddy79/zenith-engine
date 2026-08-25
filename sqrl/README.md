@@ -85,6 +85,13 @@ or DBOS — the honest comparison, including where sqrl loses, is in
 - [`docs/adr/`](docs/adr/) — every non-obvious design decision
 - [`examples/`](examples/) — checkout saga, kill -9 demo, AI-agent loop, long-running counter
 
+## Toolchain
+
+MSRV **1.85** (verified) for the default feature set and the
+`work-stealing` feature. The optional `otel` feature pulls in
+OpenTelemetry/tonic, whose transitive dependencies currently require
+rustc **1.88**.
+
 ## License
 
 MIT OR Apache-2.0.
