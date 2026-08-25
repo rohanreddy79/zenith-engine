@@ -56,6 +56,8 @@ use serde::Serialize;
 use sqrl_core::handle::TerminalResult as RawTerminal;
 use std::sync::Arc;
 
+type StartParts = (WorkflowId, Waiter<Result<(), Rejected>>, WorkflowHandle);
+
 /// Builder for [`Sqrl`].
 pub struct SqrlBuilder {
     storage: Option<Arc<dyn Storage>>,
@@ -217,7 +219,7 @@ impl Sqrl {
         id: WorkflowId,
         name: &str,
         input: &I,
-    ) -> Result<(WorkflowId, Waiter<Result<(), Rejected>>, WorkflowHandle)> {
+    ) -> Result<StartParts> {
         let input = codec::to_vec(input, "workflow input")?;
         let (admit_c, admit_w) = promise::<Result<(), Rejected>>();
         let (term_c, term_w) = promise::<RawTerminal>();
