@@ -85,25 +85,75 @@ pub enum WalRecord {
 
 /// Encode a record into its checksummed envelope.
 pub fn encode(record: &WalRecord) -> Result<Vec<u8>, StorageError> {
-    let (ty, payload) = match record {
-        WalRecord::Entry(e) => (RecordType::Entry, to_payload(e)?),
-        WalRecord::Snapshot(s) => (RecordType::Snapshot, to_payload(s)?),
-        WalRecord::SegmentHeader(h) => (RecordType::SegmentHeader, to_payload(h)?),
-    };
-    let len = (payload.len() + 2) as u32;
-    let mut body = Vec::with_capacity(HEADER + payload.len());
-    body.extend_from_slice(&len.to_le_bytes());
-    body.extend_from_slice(&[0u8; 4]); // crc placeholder
-    body.push(ty as u8);
-    body.push(SQRL_FORMAT_VERSION);
-    body.extend_from_slice(&payload);
-    let crc = crc32c::crc32c(&body[8..]);
-    body[4..8].copy_from_slice(&crc.to_le_bytes());
+    let mut body = Vec::with_capacity(HEADER + 128);
+    match record {
+        WalRecord::Entry(e) => encode_into(&mut body, RecordType::Entry, e)?,
+        WalRecord::Snapshot(s) => encode_into(&mut body, RecordType::Snapshot, s)?,
+        WalRecord::SegmentHeader(h) => encode_into(&mut body, RecordType::SegmentHeader, h)?,
+    }
     Ok(body)
 }
 
-fn to_payload<T: serde::Serialize>(v: &T) -> Result<Vec<u8>, StorageError> {
-    rmp_serde::encode::to_vec_named(v).map_err(|e| StorageError::Codec(e.to_string()))
+/// Append a journal-event record to `out` in envelope form, serializing
+/// borrowed data directly into the destination buffer (no intermediate
+/// payload allocation, no clone). Byte-identical to
+/// [`encode`]\([`WalRecord::Entry`]\).
+pub fn encode_entry_into(
+    out: &mut Vec<u8>,
+    workflow: &WorkflowId,
+    record: &JournalRecord,
+) -> Result<(), StorageError> {
+    // Borrowed mirror of [`WalEntry`]: identical field names, so the
+    // named-mode MessagePack output is byte-identical.
+    #[derive(serde::Serialize)]
+    struct WalEntryRef<'a> {
+        workflow: &'a WorkflowId,
+        record: &'a JournalRecord,
+    }
+    encode_into(out, RecordType::Entry, &WalEntryRef { workflow, record })
+}
+
+/// Append a snapshot record to `out` in envelope form; the borrowed-write
+/// counterpart of [`encode`]\([`WalRecord::Snapshot`]\).
+pub fn encode_snapshot_into(
+    out: &mut Vec<u8>,
+    workflow: &WorkflowId,
+    snapshot: &SnapshotRecord,
+) -> Result<(), StorageError> {
+    // Borrowed mirror of [`WalSnapshot`] (see `encode_entry_into`).
+    #[derive(serde::Serialize)]
+    struct WalSnapshotRef<'a> {
+        workflow: &'a WorkflowId,
+        snapshot: &'a SnapshotRecord,
+    }
+    encode_into(
+        out,
+        RecordType::Snapshot,
+        &WalSnapshotRef { workflow, snapshot },
+    )
+}
+
+/// Serialize `v` into `out` inside the checksummed envelope, in place: write
+/// placeholders, stream the payload, then patch `len` and `crc32c`. On
+/// error, `out` is restored to its original length.
+fn encode_into<T: serde::Serialize>(
+    out: &mut Vec<u8>,
+    ty: RecordType,
+    v: &T,
+) -> Result<(), StorageError> {
+    let start = out.len();
+    out.extend_from_slice(&[0u8; 8]); // len + crc placeholders
+    out.push(ty as u8);
+    out.push(SQRL_FORMAT_VERSION);
+    if let Err(e) = rmp_serde::encode::write_named(out, v) {
+        out.truncate(start);
+        return Err(StorageError::Codec(e.to_string()));
+    }
+    let len = (out.len() - start - 8) as u32;
+    out[start..start + 4].copy_from_slice(&len.to_le_bytes());
+    let crc = crc32c::crc32c(&out[start + 8..]);
+    out[start + 4..start + 8].copy_from_slice(&crc.to_le_bytes());
+    Ok(())
 }
 
 /// Why decoding stopped.
@@ -322,5 +372,52 @@ mod tests {
             let (decoded, _) = decode_one(&bytes, 0).unwrap().unwrap();
             assert_eq!(decoded, rec);
         }
+    }
+}
+
+#[cfg(test)]
+mod borrowed_encode_tests {
+    use super::*;
+    use sqrl_core::event::JournalEvent;
+    use sqrl_core::snapshot::SnapshotMeta;
+    use sqrl_core::LogicalTime;
+
+    #[test]
+    fn borrowed_encoders_are_byte_identical_to_owned() {
+        let workflow = WorkflowId::new("wf-x");
+        let record = JournalRecord {
+            index: 7,
+            at: LogicalTime::from_millis(1234),
+            event: JournalEvent::StepCompleted {
+                seq: 7,
+                result: vec![1, 2, 3, 4],
+            },
+        };
+        let owned = encode(&WalRecord::Entry(WalEntry {
+            workflow: workflow.clone(),
+            record: record.clone(),
+        }))
+        .unwrap();
+        let mut borrowed = vec![0xEE; 3]; // pre-existing bytes must survive
+        encode_entry_into(&mut borrowed, &workflow, &record).unwrap();
+        assert_eq!(&borrowed[..3], &[0xEE; 3]);
+        assert_eq!(&borrowed[3..], &owned[..]);
+
+        let snapshot = SnapshotRecord {
+            upto: 9,
+            meta: SnapshotMeta {
+                wf_time: LogicalTime::from_millis(9),
+                ..SnapshotMeta::default()
+            },
+            body: vec![9, 9, 9],
+        };
+        let owned = encode(&WalRecord::Snapshot(WalSnapshot {
+            workflow: workflow.clone(),
+            snapshot: snapshot.clone(),
+        }))
+        .unwrap();
+        let mut borrowed = Vec::new();
+        encode_snapshot_into(&mut borrowed, &workflow, &snapshot).unwrap();
+        assert_eq!(borrowed, owned);
     }
 }

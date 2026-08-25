@@ -17,7 +17,7 @@
 //! * a segment becomes GC-eligible only when no workflow's live tail —
 //!   records or *synced* snapshot — references it.
 
-use crate::codec::{self, DecodeEnd, SegmentHeader, WalEntry, WalRecord, WalSnapshot};
+use crate::codec::{self, DecodeEnd, SegmentHeader, WalRecord};
 use crate::manifest::{self, join, Manifest, StoreMeta};
 use sqrl_core::codec::SQRL_FORMAT_VERSION;
 use sqrl_core::snapshot::SnapshotRecord;
@@ -398,23 +398,20 @@ impl StorageShard for WalShard {
                     self.roll_segment()?;
                     batch_start = self.current_offset;
                 }
-                let (bytes, loc_kind) = match &entry.payload {
-                    AppendPayload::Record(rec) => (
-                        codec::encode(&WalRecord::Entry(WalEntry {
-                            workflow: entry.workflow.clone(),
-                            record: rec.clone(),
-                        }))?,
-                        LocKind::Record(rec.index),
-                    ),
-                    AppendPayload::Snapshot(snap) => (
-                        codec::encode(&WalRecord::Snapshot(WalSnapshot {
-                            workflow: entry.workflow.clone(),
-                            snapshot: snap.clone(),
-                        }))?,
-                        LocKind::Snapshot(snap.upto),
-                    ),
-                };
+                // Serialize straight into the batch buffer: no record clone,
+                // no intermediate payload allocation (measured in
+                // docs/benchmarks.md, "Profiling findings").
                 let offset = batch_start + batch.len() as u64;
+                let loc_kind = match &entry.payload {
+                    AppendPayload::Record(rec) => {
+                        codec::encode_entry_into(&mut batch, &entry.workflow, rec)?;
+                        LocKind::Record(rec.index)
+                    }
+                    AppendPayload::Snapshot(snap) => {
+                        codec::encode_snapshot_into(&mut batch, &entry.workflow, snap)?;
+                        LocKind::Snapshot(snap.upto)
+                    }
+                };
                 let wf = self.index.entry(entry.workflow.clone()).or_default();
                 match loc_kind {
                     LocKind::Record(idx) => {
@@ -434,7 +431,6 @@ impl StorageShard for WalShard {
                     }
                 }
                 self.stats.records_appended += 1;
-                batch.extend_from_slice(&bytes);
             }
             if !batch.is_empty() {
                 self.current_file
