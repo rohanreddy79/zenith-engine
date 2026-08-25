@@ -13,7 +13,7 @@ use crate::rng::SimRng;
 use sqrl_core::engine::{EngineCmd, EngineCore, EngineMetrics, TickOutput};
 use sqrl_core::handle::TerminalResult;
 use sqrl_core::storage::StorageStats;
-use sqrl_core::sync::{promise, Waiter};
+use sqrl_core::sync::promise;
 use sqrl_core::{
     Clock, DeterministicRng, EngineConfig, Error, LogicalTime, Registry, Rejected, StateKind,
     Storage, StorageError, WorkflowHandle, WorkflowId,

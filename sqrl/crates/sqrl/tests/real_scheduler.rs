@@ -175,3 +175,55 @@ fn blocking_api_without_any_runtime() {
     assert_eq!(out, 15);
     sqrl.shutdown();
 }
+
+mod macro_integration {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    struct Order {
+        sku: String,
+        qty: u32,
+    }
+
+    /// The `#[sqrl::workflow]` macro end-to-end: struct witness registration,
+    /// direct `run` invocation shape, steps, and idempotency key.
+    #[sqrl::workflow(name = "checkout", version = 1)]
+    async fn checkout(ctx: &Ctx, order: Order) -> Result<String> {
+        let key = ctx.idempotency_key();
+        let total: u32 = ctx
+            .step("price", move || {
+                let qty = order.qty;
+                async move { Ok::<u32, String>(qty * 10) }
+            })
+            .await?;
+        Ok(format!("{key}:{total}"))
+    }
+
+    #[sqrl::step]
+    async fn _example_step(x: u32) -> std::result::Result<u32, String> {
+        Ok(x)
+    }
+
+    #[tokio::test]
+    async fn macro_workflow_registers_and_runs() {
+        let sqrl = Sqrl::builder()
+            .storage(MemoryStorage::new(1))
+            .register(checkout)
+            .build()
+            .unwrap();
+        let h = sqrl
+            .start(
+                "checkout",
+                &Order {
+                    sku: "abc".into(),
+                    qty: 3,
+                },
+            )
+            .await
+            .unwrap();
+        let out: String = h.result().await.unwrap();
+        assert!(out.ends_with(":30"), "{out}");
+        assert_eq!(out.split(':').next().unwrap().len(), 32, "idempotency key");
+    }
+}

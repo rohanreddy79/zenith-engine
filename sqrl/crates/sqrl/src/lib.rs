@@ -49,8 +49,7 @@ pub use sqrl_core::{
     RetryPolicy, StateKind, StepError, StepOptions, Storage, TerminalResult, WorkflowDef,
     WorkflowDefProvider, WorkflowHandle, WorkflowId, SQRL_FORMAT_VERSION,
 };
-// TODO(macros agent): re-enable once sqrl-macros lands.
-// pub use sqrl_macros::{step, workflow};
+pub use sqrl_macros::{step, workflow};
 pub use sqrl_store::{MemoryStorage, StdVfs, WalOptions, WalStorage};
 
 use serde::Serialize;
