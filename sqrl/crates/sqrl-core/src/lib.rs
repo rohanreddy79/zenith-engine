@@ -29,7 +29,7 @@ pub use error::{
     Error, IllegalTransition, NonDeterminismError, Rejected, Result, StepError, StorageError,
 };
 pub use event::{CmdDesc, JournalEvent, JournalRecord};
-pub use id::{stable_hash, WorkflowId};
+pub use id::{stable_hash, stable_hash_more, WorkflowId};
 pub use inject::{Clock, DeterministicRng, Entropy};
 pub use retry::RetryPolicy;
 pub use snapshot::{SnapshotRecord, SnapshotState};
