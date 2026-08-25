@@ -66,12 +66,23 @@ impl Default for FaultConfig {
     }
 }
 
+/// One unsynced file mutation. Ordered: the applied view folds these over
+/// the durable content, and crash resolution keeps/drops each one
+/// independently *in order* (a dropped truncate before a kept write yields
+/// exactly the "old tail resurrected under new data" state real disks can
+/// produce).
+#[derive(Debug, Clone)]
+enum PendingOp {
+    Write(u64, Vec<u8>),
+    Truncate(u64),
+}
+
 #[derive(Debug, Clone, Default)]
 struct FileState {
     /// Content as of the last successful `sync`.
     durable: Vec<u8>,
-    /// Writes since the last sync, in order.
-    pending: Vec<(u64, Vec<u8>)>,
+    /// Mutations since the last sync, in order.
+    pending: Vec<PendingOp>,
     /// Whether the *name* is durable (parent dir synced since creation).
     name_durable: bool,
 }
@@ -80,8 +91,11 @@ impl FileState {
     /// The applied view (what reads see pre-crash).
     fn view(&self) -> Vec<u8> {
         let mut v = self.durable.clone();
-        for (off, data) in &self.pending {
-            apply_write(&mut v, *off, data);
+        for op in &self.pending {
+            match op {
+                PendingOp::Write(off, data) => apply_write(&mut v, *off, data),
+                PendingOp::Truncate(len) => v.truncate(*len as usize),
+            }
         }
         v
     }
@@ -302,7 +316,7 @@ impl SimDisk {
                 }
             }
         }
-        // Resolve pending data writes per file.
+        // Resolve pending data mutations per file, in order.
         let (p_keep, p_torn) = (s.faults.p_keep_unsynced, s.faults.p_torn);
         let paths: Vec<String> = s.files.keys().cloned().collect();
         for path in paths {
@@ -313,23 +327,34 @@ impl SimDisk {
                     .expect("file listed from state must exist");
                 std::mem::take(&mut f.pending)
             };
-            for (off, data) in pending {
+            for op in pending {
                 let keep = s.rng.chance(p_keep);
                 if !keep {
                     continue;
                 }
-                let torn = s.rng.chance(p_torn);
-                let kept: Vec<u8> = if torn && !data.is_empty() {
-                    let n = s.rng.next_below(data.len() as u64) as usize;
-                    data[..n].to_vec()
-                } else {
-                    data
-                };
-                let f = s
-                    .files
-                    .get_mut(&path)
-                    .expect("file listed from state must exist");
-                apply_write(&mut f.durable, off, &kept);
+                match op {
+                    PendingOp::Write(off, data) => {
+                        let torn = s.rng.chance(p_torn);
+                        let kept: Vec<u8> = if torn && !data.is_empty() {
+                            let n = s.rng.next_below(data.len() as u64) as usize;
+                            data[..n].to_vec()
+                        } else {
+                            data
+                        };
+                        let f = s
+                            .files
+                            .get_mut(&path)
+                            .expect("file listed from state must exist");
+                        apply_write(&mut f.durable, off, &kept);
+                    }
+                    PendingOp::Truncate(len) => {
+                        let f = s
+                            .files
+                            .get_mut(&path)
+                            .expect("file listed from state must exist");
+                        f.durable.truncate(len as usize);
+                    }
+                }
             }
         }
         s.crashed = false;
@@ -363,6 +388,33 @@ impl SimDisk {
     /// every pending write were dropped).
     pub fn durable_len(&self, path: &str) -> Option<u64> {
         self.lock().files.get(path).map(|f| f.durable.len() as u64)
+    }
+
+    /// Fork a fresh, independent disk containing ONLY the durable state
+    /// (as if every pending write and namespace op were lost — the harshest
+    /// legal crash). The durability invariant: anything ever acknowledged
+    /// durable must be recoverable from this fork.
+    pub fn fork_durable_only(&self, seed: u64) -> SimDisk {
+        let s = self.lock();
+        let files: BTreeMap<String, FileState> = s
+            .files
+            .iter()
+            .filter(|(_, f)| f.name_durable)
+            .map(|(p, f)| {
+                (
+                    p.clone(),
+                    FileState {
+                        durable: f.durable.clone(),
+                        pending: Vec::new(),
+                        name_durable: true,
+                    },
+                )
+            })
+            .collect();
+        drop(s);
+        let fork = SimDisk::new(seed);
+        fork.lock().files = files;
+        fork
     }
 
     /// A byte-exact snapshot of durable state: path → durable content, for
@@ -594,7 +646,7 @@ impl VfsFile for SimFile {
             .files
             .get_mut(&self.path)
             .ok_or_else(|| VfsError::NotFound(self.path.clone()))?;
-        f.pending.push((offset, data.to_vec()));
+        f.pending.push(PendingOp::Write(offset, data.to_vec()));
         s.stats.bytes_written += bytes;
         s.op_log
             .push(format!("write {} @{offset} +{bytes}", self.path));
@@ -618,15 +670,10 @@ impl VfsFile for SimFile {
             .files
             .get_mut(&self.path)
             .ok_or_else(|| VfsError::NotFound(self.path.clone()))?;
-        // Truncation is modeled as immediately collapsing pending state:
-        // apply pending, cut, and store as a single pending rewrite.
-        let mut v = f.view();
-        v.truncate(len as usize);
-        f.pending.clear();
-        f.pending.push((0, v.clone()));
-        // A truncate also implicitly bounds durable content: a crash may
-        // still resurrect the longer durable tail — callers must sync after
-        // truncate, which the WAL recovery path does.
+        // Like a write, a truncate is pending until `sync`: a crash may
+        // independently drop it, resurrecting the longer durable tail —
+        // callers must sync after truncate, which the WAL recovery path does.
+        f.pending.push(PendingOp::Truncate(len));
         s.op_log.push(format!("truncate {} to {len}", self.path));
         Ok(())
     }
@@ -784,6 +831,56 @@ mod tests {
         assert_eq!(run(11), run(11));
         // and at least one nearby seed resolves differently
         assert!((12..22).any(|s| run(s) != run(11)));
+    }
+
+    #[test]
+    fn truncate_then_sync_shrinks_durable_and_applied() {
+        // Regression: truncation used to be modeled as a pending overlay
+        // rewrite, which could never shorten the file — so recovery
+        // truncations silently didn't stick, leaving stale valid-looking
+        // tails behind (found by DST seed 3).
+        let disk = SimDisk::new(8);
+        write_all(&disk, "wal/f", b"0123456789");
+        let mut f = disk.open("wal/f", false).unwrap();
+        f.sync().unwrap();
+        disk.sync_dir("wal").unwrap();
+        f.truncate(4).unwrap();
+        assert_eq!(f.len().unwrap(), 4, "applied view must shrink at once");
+        f.sync().unwrap();
+        assert_eq!(disk.durable_len("wal/f"), Some(4), "sync persists the cut");
+        // Extending after the cut must not resurrect stale tail bytes.
+        f.write_at(4, b"AB").unwrap();
+        f.sync().unwrap();
+        let mut buf = [0u8; 16];
+        let n = f.read_at(0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"0123AB");
+        assert_eq!(disk.durable_len("wal/f"), Some(6));
+    }
+
+    #[test]
+    fn unsynced_truncate_may_resurrect_tail_on_crash() {
+        // Like a write, an unsynced truncate is pending: across seeds a
+        // crash must sometimes drop it (long durable tail resurrected) and
+        // sometimes keep it (file shrunk) — never anything else.
+        let (mut kept, mut dropped) = (0u32, 0u32);
+        for seed in 0..40 {
+            let disk = SimDisk::new(seed);
+            write_all(&disk, "wal/f", b"0123456789");
+            let mut f = disk.open("wal/f", false).unwrap();
+            f.sync().unwrap();
+            disk.sync_dir("wal").unwrap();
+            f.truncate(4).unwrap();
+            drop(f);
+            disk.crash();
+            disk.recover();
+            match disk.durable_len("wal/f") {
+                Some(4) => kept += 1,
+                Some(10) => dropped += 1,
+                other => panic!("seed {seed}: unexpected len {other:?}"),
+            }
+        }
+        assert!(kept > 0, "some seed must keep the unsynced truncate");
+        assert!(dropped > 0, "some seed must drop the unsynced truncate");
     }
 
     #[test]
