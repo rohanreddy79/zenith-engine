@@ -1,0 +1,50 @@
+name: sqrl nightly benchmarks
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # nightly, non-gating
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: sqrl
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sqrl
+      - name: Criterion micro-benchmarks
+        run: cargo bench -p sqrl-benches -- --noplot 2>&1 | tee criterion.txt
+      - name: Workload harness (W1, W3-small, W4)
+        run: |
+          cargo build --release -p sqrl-bench-harness
+          ./target/release/sqrl-bench-harness w1 --workflows 2000 --steps 5 | tee w1.json
+          ./target/release/sqrl-bench-harness w3 --steps 100000 | tee w3.json
+          ./target/release/sqrl-bench-harness w4 --workflows 500 | tee w4.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.run_id }}
+          path: |
+            sqrl/criterion.txt
+            sqrl/w1.json
+            sqrl/w3.json
+            sqrl/w4.json
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Fuzz WAL decoder, manifest, replay (5 min each)
+        working-directory: sqrl/fuzz
+        run: |
+          for t in wal_record manifest replay; do
+            cargo +nightly fuzz run "$t" -- -max_total_time=300 || exit 1
+          done

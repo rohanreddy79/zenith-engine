@@ -1,0 +1,26 @@
+[package]
+name = "sqrl-macros"
+description = "Procedural macros for sqrl: #[workflow] and #[step]"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[dev-dependencies]
+# Version-less path-only dev-dependency (stripped at publish): lets the
+# doctests exercise the macros through the `sqrl` facade without a
+# publishable cycle.
+sqrl = { path = "../sqrl" }
+serde = { workspace = true }

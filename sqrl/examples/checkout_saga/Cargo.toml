@@ -1,0 +1,11 @@
+[package]
+name = "checkout_saga"
+description = "sqrl example: checkout_saga"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl.workspace = true
+serde.workspace = true

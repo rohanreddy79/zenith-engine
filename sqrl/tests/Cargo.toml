@@ -1,0 +1,20 @@
+[package]
+name = "sqrl-tests"
+description = "Integration, DST, and property tests for sqrl"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl.workspace = true
+sqrl-core.workspace = true
+sqrl-sim.workspace = true
+sqrl-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true

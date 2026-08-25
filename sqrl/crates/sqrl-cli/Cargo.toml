@@ -1,0 +1,24 @@
+[package]
+name = "sqrl-cli"
+description = "CLI inspector for sqrl data directories: status, inspect, replay, fork, resume, signal, compact, bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "sqrl"
+path = "src/main.rs"
+
+[dependencies]
+sqrl-core.workspace = true
+sqrl-store.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

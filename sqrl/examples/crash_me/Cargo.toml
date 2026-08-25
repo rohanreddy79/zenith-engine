@@ -1,0 +1,11 @@
+[package]
+name = "crash_me"
+description = "sqrl example: crash_me"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl.workspace = true
+serde.workspace = true

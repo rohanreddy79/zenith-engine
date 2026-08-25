@@ -1,0 +1,19 @@
+[package]
+name = "sqrl-sim"
+description = "Deterministic simulation harness for sqrl: seeded scheduler, virtual clock, simulated disk with fault injection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sqrl-core.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

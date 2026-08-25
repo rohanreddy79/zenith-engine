@@ -1,0 +1,21 @@
+[package]
+name = "sqrl-core"
+description = "Core engine for sqrl: deterministic workflow orchestration, journal, replay, state machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
