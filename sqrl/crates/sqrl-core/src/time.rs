@@ -1,8 +1,8 @@
 //! Logical time.
 //!
 //! Everything in the orchestration path is stamped with [`LogicalTime`]: a
-//! millisecond-resolution timestamp produced by the injected [`Clock`]
-//! (crate::Clock). Under the real scheduler this tracks the wall clock; under
+//! millisecond-resolution timestamp produced by the injected clock
+//! (`crate::inject::Clock`). Under the real scheduler this tracks the wall clock; under
 //! simulation it is virtual. Workflow code must never read the wall clock
 //! directly — see `docs/determinism-guide.md`.
 
