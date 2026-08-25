@@ -1,0 +1,11 @@
+# Determinism enforcement (engineering standard §5):
+# orchestration code must obtain time, randomness, and UUIDs from the
+# injected Clock/Rng in `Ctx`. Ambient entropy is disallowed everywhere;
+# the few legitimate uses (RealScheduler, step pool, CLI, WAL fsync
+# timing) carry an explicit `#[allow(clippy::disallowed_methods)]` with a
+# justification comment.
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "inject time via sqrl Clock; wall-clock is only allowed inside steps and the real scheduler (annotate with #[allow] + justification)" },
+    { path = "std::time::Instant::now", reason = "inject time via sqrl Clock; monotonic wall-clock is only allowed in the real scheduler and benches (annotate with #[allow] + justification)" },
+    { path = "std::thread::sleep", reason = "use logical timers (ctx.sleep) or the scheduler; real sleeps are only allowed in the real scheduler and tests (annotate with #[allow] + justification)" },
+]

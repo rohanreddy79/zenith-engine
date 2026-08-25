@@ -1,0 +1,11 @@
+[package]
+name = "ai_agent_loop"
+description = "sqrl example: ai_agent_loop"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl.workspace = true
+serde.workspace = true

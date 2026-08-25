@@ -1,0 +1,11 @@
+[package]
+name = "long_running_counter"
+description = "sqrl example: long_running_counter"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl.workspace = true
+serde.workspace = true

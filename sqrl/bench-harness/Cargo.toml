@@ -1,0 +1,15 @@
+[package]
+name = "sqrl-bench-harness"
+description = "End-to-end benchmark harness for sqrl (workloads W1-W5)"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl.workspace = true
+sqrl-core.workspace = true
+sqrl-store.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "sqrl"
+description = "Embedded, deterministic-first durable execution for Rust: the SQLite of durable workflows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[dependencies]
+sqrl-core.workspace = true
+sqrl-store.workspace = true
+sqrl-macros.workspace = true
+serde.workspace = true

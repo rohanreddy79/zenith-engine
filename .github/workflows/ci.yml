@@ -1,0 +1,82 @@
+name: sqrl CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+    paths: ["sqrl/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["sqrl/**", ".github/workflows/ci.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    working-directory: sqrl
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable, "1.85"] # stable + MSRV
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sqrl
+      - name: Build (default features)
+        run: cargo build --workspace
+      - name: Test (default features)
+        run: cargo test --workspace
+      - name: Build --all-features
+        run: cargo build --workspace --all-features
+      - name: Test --all-features
+        run: cargo test --workspace --all-features
+      - name: Build --no-default-features
+        run: cargo build --workspace --no-default-features
+
+  lint:
+    name: fmt + clippy + docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sqrl
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: rustdoc
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  coverage:
+    name: coverage (sqrl-core + sqrl-store)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sqrl
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage
+        run: |
+          cargo llvm-cov -p sqrl-core -p sqrl-store --summary-only \
+            --fail-under-lines 85

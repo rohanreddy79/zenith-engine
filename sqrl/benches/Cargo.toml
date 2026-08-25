@@ -1,0 +1,15 @@
+[package]
+name = "sqrl-benches"
+description = "Criterion micro-benchmarks for sqrl"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqrl-core.workspace = true
+sqrl-store.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,4 @@
+[toolchain]
+# Pinned stable toolchain used for development and CI "stable" jobs.
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
