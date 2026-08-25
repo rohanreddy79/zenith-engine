@@ -48,6 +48,7 @@ quote = "1"
 syn = { version = "2", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+postgres = "0.19"
 # dev
 proptest = "1"
 criterion = "0.5"
