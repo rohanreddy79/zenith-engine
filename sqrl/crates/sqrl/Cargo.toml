@@ -11,8 +11,22 @@ keywords.workspace = true
 categories.workspace = true
 readme = "../../README.md"
 
+[features]
+default = []
+# Swap the per-core step dispatch for a Tokio work-stealing pool sized to all
+# cores (benchmarked in Phase 2 for skewed workloads). Orchestration remains
+# thread-per-core either way.
+work-stealing = []
+
 [dependencies]
 sqrl-core.workspace = true
 sqrl-store.workspace = true
 sqrl-macros.workspace = true
 serde.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tempfile.workspace = true
+serde_json.workspace = true

@@ -22,8 +22,10 @@ mod clock;
 mod disk;
 mod executor;
 mod rng;
+mod sched;
 
 pub use clock::SimClock;
 pub use disk::{DiskStats, FaultConfig, SimDisk, SimFile};
 pub use executor::{SimExecutor, SimSleep, TaskId, TraceEntry};
 pub use rng::SimRng;
+pub use sched::SimScheduler;

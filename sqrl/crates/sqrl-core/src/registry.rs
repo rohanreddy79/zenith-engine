@@ -27,6 +27,39 @@ pub struct WorkflowDef {
     pub factory: WorkflowFactory,
 }
 
+/// Implemented by `#[sqrl::workflow]`-generated types so they can be passed
+/// straight to the builder's `register(...)`.
+pub trait WorkflowDefProvider {
+    /// The workflow definition for this type.
+    fn workflow_def() -> WorkflowDef;
+}
+
+/// Build a [`WorkflowDef`] from a typed async function. This is what the
+/// `#[sqrl::workflow]` macro expands to; it is also usable directly.
+pub fn typed_def<I, O, F, Fut>(name: &str, version: u32, f: F) -> WorkflowDef
+where
+    I: DeserializeOwned + 'static,
+    O: Serialize + 'static,
+    F: Fn(Ctx, I) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O, Error>> + 'static,
+{
+    let f = Arc::new(f);
+    let factory: WorkflowFactory = Arc::new(move |ctx: Ctx, input: Vec<u8>| {
+        let f = Arc::clone(&f);
+        Box::pin(async move {
+            let max_payload = ctx.cell.borrow().max_payload;
+            let input: I = codec::from_slice(&input, "workflow input")?;
+            let out = f(ctx, input).await?;
+            codec::to_vec_limited(&out, max_payload, "workflow output")
+        }) as WorkflowFut
+    });
+    WorkflowDef {
+        name: name.to_string(),
+        version,
+        factory,
+    }
+}
+
 /// The set of registered workflows an engine serves.
 #[derive(Clone, Default)]
 pub struct Registry {
@@ -54,21 +87,7 @@ impl Registry {
         F: Fn(Ctx, I) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<O, Error>> + 'static,
     {
-        let f = Arc::new(f);
-        let factory: WorkflowFactory = Arc::new(move |ctx: Ctx, input: Vec<u8>| {
-            let f = Arc::clone(&f);
-            Box::pin(async move {
-                let max_payload = ctx.cell.borrow().max_payload;
-                let input: I = codec::from_slice(&input, "workflow input")?;
-                let out = f(ctx, input).await?;
-                codec::to_vec_limited(&out, max_payload, "workflow output")
-            }) as WorkflowFut
-        });
-        self.register_def(WorkflowDef {
-            name: name.to_string(),
-            version,
-            factory,
-        })
+        self.register_def(typed_def(name, version, f))
     }
 
     /// Register a pre-built (possibly macro-generated) definition.

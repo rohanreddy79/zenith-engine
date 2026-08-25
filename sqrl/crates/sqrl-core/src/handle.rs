@@ -21,6 +21,14 @@ pub struct WorkflowHandle {
     waiter: Waiter<TerminalResult>,
 }
 
+impl core::fmt::Debug for WorkflowHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WorkflowHandle")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WorkflowHandle {
     /// Build a handle (engine-internal).
     pub fn new(id: WorkflowId, waiter: Waiter<TerminalResult>) -> Self {

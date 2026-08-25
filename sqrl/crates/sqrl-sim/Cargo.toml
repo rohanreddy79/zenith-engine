@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 sqrl-core.workspace = true
+serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

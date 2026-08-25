@@ -59,6 +59,9 @@ pub enum Error {
     /// The underlying storage failed.
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
+    /// The engine rejected the request (admission control).
+    #[error(transparent)]
+    Rejected(#[from] Rejected),
 }
 
 impl Error {

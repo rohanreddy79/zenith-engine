@@ -43,7 +43,9 @@ pub use event::{CmdDesc, JournalEvent, JournalRecord};
 pub use handle::{TerminalResult, WorkflowHandle};
 pub use id::{stable_hash, stable_hash_more, WorkflowId};
 pub use inject::{Clock, DeterministicRng, Entropy};
-pub use registry::{Registry, WorkflowDef, WorkflowFactory, WorkflowFut};
+pub use registry::{
+    typed_def, Registry, WorkflowDef, WorkflowDefProvider, WorkflowFactory, WorkflowFut,
+};
 pub use retry::RetryPolicy;
 pub use snapshot::{SnapshotRecord, SnapshotState};
 pub use state::{FailureKind, StateKind, WorkflowState};
